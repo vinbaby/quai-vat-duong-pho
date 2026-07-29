@@ -8,7 +8,8 @@ Hiện tại game đã có tài khoản Supabase và phòng chơi Realtime thử
 - Xu, phần thưởng từ hạ gục và quảng cáo nhận thưởng mô phỏng.
 - Thiết kế giao diện cho shop và số dư xu.
 - Phòng multiplayer dùng kênh riêng tư, chỉ dành cho người đã đăng nhập.
-- Bot lấp chỗ trống khi ít người chơi.
+- Người chơi được tự động ghép theo quốc gia, tối đa 20 người trong mỗi phòng công khai.
+- Bot chỉ dùng làm chế độ dự phòng khi mất kết nối.
 
 ## Những tài khoản chủ game cần tạo
 
