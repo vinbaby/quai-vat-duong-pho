@@ -8,9 +8,8 @@ Chạy bằng web server tĩnh (Cloudflare Workers/Pages, Netlify hoặc máy ch
 - Mỗi biệt danh nhận một nhân vật hoạt hình riêng.
 - Người chơi thật cùng xuất hiện trong phòng `street-lobby-1` qua Supabase Realtime.
 - Presence đồng bộ người online; Broadcast đồng bộ vị trí, va chạm và hạ gục.
-- Khi online chỉ hiển thị người chơi thật; bot và vật phẩm cục bộ chỉ dùng khi mất kết nối để tránh lệch trạng thái giữa thiết bị.
+- Bot tự động lấp chỗ trống khi phòng chưa đủ người.
 - Điều khiển bằng **WASD** hoặc phím mũi tên để va chạm và đẩy đối thủ.
-- Điện thoại và máy tính bảng có cụm phím cảm ứng ở góc phải màn hình.
 - Bố cục hố đen cố định theo phòng để mọi người nhìn thấy cùng một đấu trường; chạm vào hoặc bị đẩy vào sẽ bị hạ và hồi sinh sau 3 giây.
 - Điểm cho cú đẩy hạ gục và bảng xếp hạng trực tiếp.
 - Nhặt vật phẩm 💥 để tăng 5% lực đẩy hoặc ⚡ để tăng 5% tốc độ trong 60 giây; nhặt lại chỉ làm mới thời gian.
