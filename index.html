@@ -35,7 +35,10 @@
         <canvas id="game" aria-label="Đấu trường Quái Vật Đường Phố"></canvas>
         <header class="game-header">
           <div class="brand-mini"><b>✦ QUÁI VẬT</b><span>ĐƯỜNG PHỐ</span></div>
-          <div class="leader-pill">🏆 <b id="leader-name">...</b> dẫn đầu</div>
+          <div class="match-info">
+            <div class="leader-pill">🏆 <b id="leader-name">...</b> dẫn đầu</div>
+            <div id="connection-status" class="connection-status connecting">● ĐANG KẾT NỐI</div>
+          </div>
           <div class="top-actions">
             <button id="ad-btn" class="coin-btn" title="Nhận xu tự nguyện">◉ <b id="coin-count">0</b></button>
             <button id="shop-btn" class="shop-btn" title="Cửa hàng cosmetic">🛍</button>
@@ -77,7 +80,7 @@
         </section>
       </section>
     </main>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.111.0"></script>
     <script src="./supabase-config.js"></script>
     <script src="./game.js"></script>
   </body>

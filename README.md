@@ -1,15 +1,17 @@
-# Quái Vật Đường Phố — bản chơi thử
+# Quái Vật Đường Phố — bản multiplayer thử nghiệm
 
-Mở `index.html` bằng trình duyệt để chơi.
+Chạy bằng web server tĩnh (Cloudflare Workers/Pages, Netlify hoặc máy chủ cục bộ) rồi mở trong trình duyệt.
 
 ## Có gì trong bản thử
 
-- Nhập biệt danh và lưu người chơi ngay trên trình duyệt.
+- Đăng ký/đăng nhập và lưu hồ sơ bằng Supabase.
 - Mỗi biệt danh nhận một nhân vật hoạt hình riêng.
+- Người chơi thật cùng xuất hiện trong phòng `street-lobby-1` qua Supabase Realtime.
+- Presence đồng bộ người online; Broadcast đồng bộ vị trí, va chạm và hạ gục.
+- Bot tự động lấp chỗ trống khi phòng chưa đủ người.
 - Điều khiển bằng **WASD** hoặc phím mũi tên để va chạm và đẩy đối thủ.
-- Hố đen xuất hiện ngẫu nhiên; chạm vào hoặc bị đẩy vào sẽ bị hạ và hồi sinh sau 3 giây.
-- Bot đối thủ, điểm cho cú đẩy hạ gục và bảng xếp hạng trực tiếp.
-- Số hố đen bằng một nửa số người trong trận, có phạm vi lớn và lực hút khi đến gần.
+- Bố cục hố đen cố định theo phòng để mọi người nhìn thấy cùng một đấu trường; chạm vào hoặc bị đẩy vào sẽ bị hạ và hồi sinh sau 3 giây.
+- Điểm cho cú đẩy hạ gục và bảng xếp hạng trực tiếp.
 - Nhặt vật phẩm 💥 để tăng 5% lực đẩy hoặc ⚡ để tăng 5% tốc độ trong 60 giây; nhặt lại chỉ làm mới thời gian.
 - Hồ sơ người chơi, xu, cửa hàng skin cosmetic và nút quảng cáo nhận thưởng mô phỏng.
 - Sáu vệt di chuyển cosmetic: không dùng vệt, cầu vồng, cỏ may mắn, tương ớt, nước mát và sao lấp lánh.
@@ -23,10 +25,12 @@ Mở `index.html` bằng trình duyệt để chơi.
 
 ## Đưa lên web
 
-Ba file `index.html`, `style.css`, và `game.js` là đủ để đưa bản chơi thử lên Cloudflare Pages, Netlify hoặc bất kỳ hosting web tĩnh nào.
+Đưa các file web ở thư mục gốc lên Cloudflare. `supabase-config.js` chỉ chứa URL và publishable key dành cho frontend, không được đặt secret/service-role key vào đây.
 
-## Để thành game trực tuyến thật
+## Cấu hình multiplayer
 
-Bước sau cần thay các bot bằng phòng chơi dùng WebSocket, đồng thời dùng Supabase cho đăng ký/đăng nhập và lưu điểm. Khi đó, website vẫn triển khai gần như tự động; chỉ có phần phòng chơi được kết nối tới dịch vụ máy chủ.
+- Chạy migration trong `supabase/migrations` để cấp quyền Broadcast và Presence cho người đã đăng nhập.
+- Kênh game là kênh riêng tư và chỉ chấp nhận topic bắt đầu bằng `game:street-`.
+- Đây là MVP client-authoritative. Trước khi tổ chức xếp hạng hoặc trao thưởng có giá trị, cần chuyển va chạm, điểm và hạ gục sang máy chủ authoritative để chống gian lận.
 
 Xem thêm `PRODUCTION.md` để biết phần nào cần tài khoản đứng tên chủ game trước khi phát hành.
