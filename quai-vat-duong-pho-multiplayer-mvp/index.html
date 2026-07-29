@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Quái Vật Đường Phố</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Nunito:wght@500;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main id="app">
+      <section class="auth-card" id="auth-screen">
+        <div class="logo-mark">✦</div>
+        <p class="eyebrow">ĐẤU TRƯỜNG TRỰC TUYẾN</p>
+        <h1>Quái Vật<br /><span>Đường Phố</span></h1>
+        <p class="intro">Chọn một biệt danh, trở thành quái vật độc nhất và leo lên ngôi đầu bảng!</p>
+        <div class="auth-switch">
+          <button type="button" class="active" data-auth-mode="signup">ĐĂNG KÝ</button>
+          <button type="button" data-auth-mode="signin">ĐĂNG NHẬP</button>
+        </div>
+        <form id="auth-form">
+          <div id="name-field"><label for="name">Biệt danh</label><input id="name" maxlength="16" autocomplete="nickname" placeholder="Ví dụ: MèoMập" required /></div>
+          <label for="email">Email</label>
+          <input id="email" type="email" autocomplete="email" placeholder="ban@email.com" required />
+          <label for="password">Mật khẩu</label>
+          <input id="password" type="password" minlength="8" autocomplete="current-password" placeholder="Ít nhất 8 ký tự" required />
+          <button id="auth-submit" type="submit">TẠO TÀI KHOẢN <span>→</span></button>
+        </form>
+        <p id="auth-message" class="tiny">Tài khoản lưu an toàn trên máy chủ.</p>
+      </section>
+
+      <section id="game-screen" hidden>
+        <canvas id="game" aria-label="Đấu trường Quái Vật Đường Phố"></canvas>
+        <header class="game-header">
+          <div class="brand-mini"><b>✦ QUÁI VẬT</b><span>ĐƯỜNG PHỐ</span></div>
+          <div class="match-info">
+            <div class="leader-pill">🏆 <b id="leader-name">...</b> dẫn đầu</div>
+            <div id="connection-status" class="connection-status connecting">● ĐANG KẾT NỐI</div>
+          </div>
+          <div class="top-actions">
+            <button id="ad-btn" class="coin-btn" title="Nhận xu tự nguyện">◉ <b id="coin-count">0</b></button>
+            <button id="shop-btn" class="shop-btn" title="Cửa hàng cosmetic">🛍</button>
+            <button id="leave-btn" title="Đổi người chơi">↪</button>
+          </div>
+        </header>
+        <aside class="player-card">
+          <div id="avatar" class="avatar">🐱</div>
+          <div><b id="player-name">Người chơi</b><span id="character-name">Mèo ninja</span></div>
+          <div id="boosts" class="mode-chip">💥 ĐẨY 100% · ⚡ TỐC 100%</div>
+        </aside>
+        <aside class="scoreboard">
+          <p>🏆 BẢNG XẾP HẠNG</p>
+          <ol id="ranking"></ol>
+        </aside>
+        <div class="hint">Di chuyển: <b>W A S D</b> hoặc <b>← ↑ ↓ →</b> · Va chạm để đẩy đối thủ</div>
+        <div id="toast" class="toast" aria-live="polite"></div>
+        <section id="respawn" class="respawn" hidden>
+          <div>💫</div><h2>Bạn đã bị hạ!</h2><p>Hồi sinh sau <b id="respawn-count">3</b> giây</p>
+        </section>
+        <section id="shop-modal" class="modal" hidden>
+          <div class="modal-card">
+            <button class="modal-close" data-close="shop-modal">×</button>
+            <p class="eyebrow">CỬA HÀNG TRANG TRÍ</p>
+            <h2>Chọn diện mạo</h2>
+            <p class="modal-note">Các skin chỉ thay đổi ngoại hình, hoàn toàn không tăng sức mạnh.</p>
+            <div id="shop-grid" class="shop-grid"></div>
+          </div>
+        </section>
+        <section id="ad-modal" class="modal" hidden>
+          <div class="modal-card ad-card">
+            <button class="modal-close" data-close="ad-modal">×</button>
+            <div class="ad-icon">🎁</div>
+            <p class="eyebrow">PHẦN THƯỞNG TỰ NGUYỆN</p>
+            <h2>Nhận 20 xu</h2>
+            <p class="modal-note">Bản thử nghiệm sẽ mô phỏng quảng cáo trong vài giây. Khi phát hành, đây sẽ là quảng cáo có thưởng thật.</p>
+            <button id="watch-ad-btn" class="primary-action">XEM & NHẬN XU</button>
+          </div>
+        </section>
+      </section>
+    </main>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.111.0"></script>
+    <script src="./supabase-config.js"></script>
+    <script src="./game.js"></script>
+  </body>
+</html>
