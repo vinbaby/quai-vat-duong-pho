@@ -54,7 +54,13 @@
           <p>🏆 BẢNG XẾP HẠNG</p>
           <ol id="ranking"></ol>
         </aside>
-        <div class="hint">Di chuyển: <b>W A S D</b> hoặc <b>← ↑ ↓ →</b> · Va chạm để đẩy đối thủ</div>
+        <div id="touch-controls" class="touch-controls" aria-label="Điều khiển di chuyển cảm ứng">
+          <button class="touch-up" data-move-key="KeyW" aria-label="Đi lên">▲</button>
+          <button class="touch-left" data-move-key="KeyA" aria-label="Đi sang trái">◀</button>
+          <button class="touch-down" data-move-key="KeyS" aria-label="Đi xuống">▼</button>
+          <button class="touch-right" data-move-key="KeyD" aria-label="Đi sang phải">▶</button>
+        </div>
+        <div class="hint">Di chuyển: <b>W A S D</b>, <b>← ↑ ↓ →</b> hoặc nút cảm ứng · Va chạm để đẩy đối thủ</div>
         <div id="toast" class="toast" aria-live="polite"></div>
         <section id="respawn" class="respawn" hidden>
           <div>💫</div><h2>Bạn đã bị hạ!</h2><p>Hồi sinh sau <b id="respawn-count">3</b> giây</p>
