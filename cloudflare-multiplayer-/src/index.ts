@@ -2,6 +2,8 @@ import { DurableObject } from "cloudflare:workers";
 
 const ROOM_CAPACITY = 20;
 const MAX_MESSAGE_BYTES = 2048;
+const SCORE_RETENTION_MS = 120_000;
+const HIT_CREDIT_MS = 10_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type SocketAttachment = {
@@ -10,6 +12,14 @@ type SocketAttachment = {
   lastStateAt: number;
   messageWindowAt: number;
   messageCount: number;
+  score: number;
+  x: number;
+  y: number;
+  dead: boolean;
+  lastHitFrom: string;
+  lastHitAt: number;
+  lastPersistAt: number;
+  roomTopic: string;
 };
 
 type AuthUser = {
@@ -41,6 +51,31 @@ function decodedHeader(value: string | null): string {
 
 function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_RE.test(value);
+}
+
+function roomHash(text: string): number {
+  let value = 7;
+  for (const character of text) {
+    value = ((value << 5) - value + character.charCodeAt(0)) | 0;
+  }
+  return value >>> 0;
+}
+
+function roomHoles(topic: string): Array<{ x: number; y: number; r: number }> {
+  const seed = roomHash(topic);
+  const random = (index: number) => {
+    const value = Math.sin(seed + index * 999) * 43758.5453;
+    return value - Math.floor(value);
+  };
+  return Array.from({ length: 5 }, (_, index) => ({
+    x: 260 + random(index * 2) * 2080,
+    y: 220 + random(index * 2 + 1) * 1360,
+    r: 58 + random(index + 30) * 15,
+  }));
+}
+
+function isInsideRoomHole(topic: string, x: number, y: number): boolean {
+  return roomHoles(topic).some((hole) => Math.hypot(x - hole.x, y - hole.y) <= hole.r + 40);
 }
 
 function readProtocols(request: Request): { token: string } | null {
@@ -124,23 +159,75 @@ function withSecurityHeaders(response: Response, env: Env): Response {
 }
 
 export class GameRoom extends DurableObject<Env> {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    ctx.blockConcurrencyWhile(async () => {
+      ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS room_scores (
+          user_id TEXT PRIMARY KEY,
+          score INTEGER NOT NULL DEFAULT 0,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS elimination_events (
+          event_id TEXT PRIMARY KEY,
+          created_at INTEGER NOT NULL
+        );
+      `);
+    });
+  }
+
   private attachment(ws: WebSocket): SocketAttachment | null {
     try {
-      const value = ws.deserializeAttachment() as SocketAttachment | null;
-      return value && isUuid(value.userId) ? value : null;
+      const value = ws.deserializeAttachment() as Partial<SocketAttachment> | null;
+      if (!value || !isUuid(value.userId)) return null;
+      return {
+        userId: value.userId,
+        name: boundedText(value.name, 16, "Người chơi"),
+        lastStateAt: boundedNumber(value.lastStateAt, 0, Number.MAX_SAFE_INTEGER),
+        messageWindowAt: boundedNumber(value.messageWindowAt, 0, Number.MAX_SAFE_INTEGER),
+        messageCount: boundedNumber(value.messageCount, 0, 1_000),
+        score: Math.floor(boundedNumber(value.score, 0, 1_000_000)),
+        x: boundedNumber(value.x, 25, 2575, 1300),
+        y: boundedNumber(value.y, 25, 1775, 900),
+        dead: Boolean(value.dead),
+        lastHitFrom: isUuid(value.lastHitFrom) ? value.lastHitFrom : "",
+        lastHitAt: boundedNumber(value.lastHitAt, 0, Number.MAX_SAFE_INTEGER),
+        lastPersistAt: boundedNumber(value.lastPersistAt, 0, Number.MAX_SAFE_INTEGER),
+        roomTopic: boundedText(value.roomTopic, 80, "game:street-gl-1"),
+      };
     } catch {
       return null;
     }
   }
 
-  private players(): Array<{ id: string; name: string }> {
-    const players = new Map<string, string>();
+  private players(): Array<{ id: string; name: string; score: number }> {
+    const players = new Map<string, { name: string; score: number }>();
     for (const ws of this.ctx.getWebSockets()) {
       if (ws.readyState !== WebSocket.OPEN) continue;
       const attachment = this.attachment(ws);
-      if (attachment) players.set(attachment.userId, attachment.name);
+      if (attachment) players.set(attachment.userId, { name: attachment.name, score: attachment.score });
     }
-    return [...players].map(([id, name]) => ({ id, name }));
+    return [...players].map(([id, player]) => ({ id, ...player }));
+  }
+
+  private socketForUser(userId: string): WebSocket | null {
+    return this.ctx.getWebSockets(`user:${userId}`).find((ws) => ws.readyState === WebSocket.OPEN) ?? null;
+  }
+
+  private persistScore(attachment: SocketAttachment, now = Date.now()): void {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO room_scores (user_id, score, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT (user_id) DO UPDATE SET score = excluded.score, updated_at = excluded.updated_at`,
+      attachment.userId,
+      attachment.score,
+      now,
+    );
+    attachment.lastPersistAt = now;
+  }
+
+  private broadcastScores(): void {
+    this.broadcast("score-update", { players: this.players().map(({ id, score }) => ({ id, score })) });
   }
 
   private broadcast(type: string, payload: unknown, except?: WebSocket): void {
@@ -167,7 +254,7 @@ export class GameRoom extends DurableObject<Env> {
     const name = boundedText(decodedHeader(request.headers.get("X-QV-Player-Name")), 16, "Người chơi");
     if (!isUuid(userId)) return jsonError(401, "invalid_identity");
 
-    const sockets = this.ctx.getWebSockets();
+    const sockets = this.ctx.getWebSockets().filter((ws) => ws.readyState === WebSocket.OPEN);
     const duplicate = sockets.filter((ws) => this.attachment(ws)?.userId === userId);
     if (sockets.length - duplicate.length >= ROOM_CAPACITY) {
       return jsonError(409, "room_full");
@@ -183,16 +270,45 @@ export class GameRoom extends DurableObject<Env> {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     const now = Date.now();
+    const url = new URL(request.url);
+    const country = (url.searchParams.get("country") ?? "GL").toLowerCase();
+    const room = Math.max(1, Number(url.searchParams.get("room")) || 1);
+    const roomTopic = `game:street-${country}-${room}`;
+    const carriedScore = duplicate.reduce(
+      (score, ws) => Math.max(score, this.attachment(ws)?.score ?? 0),
+      0,
+    );
+    const stored = this.ctx.storage.sql
+      .exec<{ score: number; updated_at: number }>(
+        "SELECT score, updated_at FROM room_scores WHERE user_id = ?",
+        userId,
+      )
+      .toArray()[0];
+    const score = carriedScore || (
+      stored && stored.updated_at >= now - SCORE_RETENTION_MS
+        ? Math.floor(boundedNumber(stored.score, 0, 1_000_000))
+        : 0
+    );
     server.serializeAttachment({
       userId,
       name,
       lastStateAt: 0,
       messageWindowAt: now,
       messageCount: 0,
+      score,
+      x: 1300,
+      y: 900,
+      dead: false,
+      lastHitFrom: "",
+      lastHitAt: 0,
+      lastPersistAt: now,
+      roomTopic,
     } satisfies SocketAttachment);
     this.ctx.acceptWebSocket(server, [`user:${userId}`]);
-    server.send(JSON.stringify({ type: "welcome", payload: { id: userId, capacity: ROOM_CAPACITY } }));
+    this.persistScore(this.attachment(server)!, now);
+    server.send(JSON.stringify({ type: "welcome", payload: { id: userId, capacity: ROOM_CAPACITY, score } }));
     this.broadcastPresence();
+    this.broadcastScores();
 
     return new Response(null, {
       status: 101,
@@ -237,24 +353,44 @@ export class GameRoom extends DurableObject<Env> {
 
     if (type === "player-state") {
       if (now - attachment.lastStateAt < 125) return;
+      const nextDead = Boolean(payload.dead);
+      const scoreChanged = nextDead && !attachment.dead;
       attachment.lastStateAt = now;
+      attachment.x = boundedNumber(payload.x, 25, 2575, 1300);
+      attachment.y = boundedNumber(payload.y, 25, 1775, 900);
+      attachment.dead = nextDead;
+      if (scoreChanged) attachment.score = Math.max(0, attachment.score - 8);
+      if (scoreChanged || now - attachment.lastPersistAt >= 15_000) {
+        this.persistScore(attachment, now);
+      }
       ws.serializeAttachment(attachment);
       clean = {
         id: attachment.userId,
         name: attachment.name,
         seq: Math.floor(boundedNumber(payload.seq, 0, 2_147_483_647)),
-        x: boundedNumber(payload.x, 25, 2575, 1300),
-        y: boundedNumber(payload.y, 25, 1775, 900),
+        x: attachment.x,
+        y: attachment.y,
         vx: boundedNumber(payload.vx, -500, 500),
         vy: boundedNumber(payload.vy, -500, 500),
         dir: boundedNumber(payload.dir, -Math.PI * 2, Math.PI * 2),
-        score: Math.floor(boundedNumber(payload.score, 0, 1_000_000)),
-        dead: Boolean(payload.dead),
+        score: attachment.score,
+        dead: attachment.dead,
         icon: boundedText(payload.icon, 4, "🐱"),
         color: /^#[0-9a-f]{6}$/i.test(String(payload.color ?? "")) ? String(payload.color) : "#a78bfa",
         trail: boundedText(payload.trail, 16, "none"),
       };
+      if (scoreChanged) this.broadcastScores();
     } else if (type === "player-hit" && isUuid(payload.targetId)) {
+      const targetSocket = this.socketForUser(payload.targetId);
+      const target = targetSocket ? this.attachment(targetSocket) : null;
+      const closeEnough = target &&
+        now - attachment.lastStateAt <= 2_000 &&
+        now - target.lastStateAt <= 2_000 &&
+        Math.hypot(attachment.x - target.x, attachment.y - target.y) <= 140;
+      if (!targetSocket || !target || !closeEnough || target.dead) return;
+      target.lastHitFrom = attachment.userId;
+      target.lastHitAt = now;
+      targetSocket.serializeAttachment(target);
       clean = {
         targetId: payload.targetId,
         fromId: attachment.userId,
@@ -267,12 +403,43 @@ export class GameRoom extends DurableObject<Env> {
       isUuid(payload.eventId) &&
       isUuid(payload.killerId)
     ) {
+      const killerSocket = this.socketForUser(payload.killerId);
+      const killer = killerSocket ? this.attachment(killerSocket) : null;
+      const seen = this.ctx.storage.sql
+        .exec<{ event_id: string }>(
+          "SELECT event_id FROM elimination_events WHERE event_id = ?",
+          payload.eventId,
+        )
+        .toArray().length > 0;
+      const valid = killerSocket &&
+        killer &&
+        payload.killerId !== attachment.userId &&
+        attachment.dead &&
+        attachment.lastHitFrom === payload.killerId &&
+        now - attachment.lastHitAt <= HIT_CREDIT_MS &&
+        isInsideRoomHole(attachment.roomTopic, attachment.x, attachment.y) &&
+        !seen;
+      if (!valid || !killerSocket || !killer) return;
+      this.ctx.storage.sql.exec(
+        "INSERT INTO elimination_events (event_id, created_at) VALUES (?, ?)",
+        payload.eventId,
+        now,
+      );
+      killer.score = Math.min(1_000_000, killer.score + 15);
+      attachment.lastHitFrom = "";
+      attachment.lastHitAt = 0;
+      this.persistScore(killer, now);
+      killerSocket.serializeAttachment(killer);
+      ws.serializeAttachment(attachment);
       clean = {
         eventId: payload.eventId,
         victimId: attachment.userId,
         victimName: attachment.name,
         killerId: payload.killerId,
+        victimScore: attachment.score,
+        killerScore: killer.score,
       };
+      this.broadcastScores();
     } else if (
       (type === "item-spawned" || type === "item-removed" || type === "item-collected") &&
       isUuid(payload.itemId)
@@ -290,11 +457,15 @@ export class GameRoom extends DurableObject<Env> {
     if (clean) this.broadcast(type, clean, ws);
   }
 
-  async webSocketClose(): Promise<void> {
+  async webSocketClose(ws: WebSocket): Promise<void> {
+    const attachment = this.attachment(ws);
+    if (attachment) this.persistScore(attachment);
     this.broadcastPresence();
   }
 
-  async webSocketError(): Promise<void> {
+  async webSocketError(ws: WebSocket): Promise<void> {
+    const attachment = this.attachment(ws);
+    if (attachment) this.persistScore(attachment);
     this.broadcastPresence();
   }
 }
