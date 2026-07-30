@@ -1,0 +1,338 @@
+import { DurableObject } from "cloudflare:workers";
+
+const ROOM_CAPACITY = 20;
+const MAX_MESSAGE_BYTES = 2048;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+type SocketAttachment = {
+  userId: string;
+  name: string;
+  lastStateAt: number;
+  messageWindowAt: number;
+  messageCount: number;
+};
+
+type AuthUser = {
+  id: string;
+  user_metadata?: { display_name?: unknown };
+};
+
+function jsonError(status: number, error: string): Response {
+  return Response.json({ error }, { status });
+}
+
+function boundedText(value: unknown, max: number, fallback = ""): string {
+  const text = String(value ?? fallback).trim().replace(/\s+/g, " ");
+  return text.slice(0, max) || fallback;
+}
+
+function boundedNumber(value: unknown, min: number, max: number, fallback = 0): number {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(min, Math.min(max, number)) : fallback;
+}
+
+function decodedHeader(value: string | null): string {
+  try {
+    return decodeURIComponent(value ?? "");
+  } catch {
+    return "";
+  }
+}
+
+function isUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID_RE.test(value);
+}
+
+function readProtocols(request: Request): { token: string } | null {
+  const protocols = (request.headers.get("Sec-WebSocket-Protocol") ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (!protocols.includes("qv-game-v1")) return null;
+  const authProtocol = protocols.find((value) => value.startsWith("qv-auth."));
+  const token = authProtocol?.slice("qv-auth.".length) ?? "";
+  return token.length >= 32 && token.length <= 4096 ? { token } : null;
+}
+
+async function verifySupabaseUser(
+  request: Request,
+  env: Env,
+  country: string,
+  room: number,
+): Promise<{ userId: string; name: string } | null> {
+  const auth = readProtocols(request);
+  if (!auth) return null;
+  const headers = {
+    apikey: env.SUPABASE_PUBLISHABLE_KEY,
+    Authorization: `Bearer ${auth.token}`,
+    Accept: "application/json",
+  };
+  const userResponse = await fetch(`${env.SUPABASE_URL}/auth/v1/user`, { headers });
+  if (!userResponse.ok) return null;
+  const user = await userResponse.json<AuthUser>();
+  if (!isUuid(user.id)) return null;
+
+  const matchUrl = new URL("/rest/v1/public_matchmaking", env.SUPABASE_URL);
+  matchUrl.searchParams.set("select", "country_code,room_number,last_seen");
+  matchUrl.searchParams.set("user_id", `eq.${user.id}`);
+  matchUrl.searchParams.set("limit", "1");
+  const profileUrl = new URL("/rest/v1/player_profiles", env.SUPABASE_URL);
+  profileUrl.searchParams.set("select", "display_name");
+  profileUrl.searchParams.set("id", `eq.${user.id}`);
+  profileUrl.searchParams.set("limit", "1");
+
+  const [matchResponse, profileResponse] = await Promise.all([
+    fetch(matchUrl, { headers }),
+    fetch(profileUrl, { headers }),
+  ]);
+  if (!matchResponse.ok) return null;
+  const matches = await matchResponse.json<Array<{ country_code: string; room_number: number; last_seen: string }>>();
+  const match = matches[0];
+  const lastSeen = Date.parse(match?.last_seen ?? "");
+  if (
+    !match ||
+    match.country_code !== country ||
+    Number(match.room_number) !== room ||
+    !Number.isFinite(lastSeen) ||
+    lastSeen < Date.now() - 60_000
+  ) {
+    return null;
+  }
+
+  let name = boundedText(user.user_metadata?.display_name, 16, "Người chơi");
+  if (profileResponse.ok) {
+    const profiles = await profileResponse.json<Array<{ display_name: string }>>();
+    name = boundedText(profiles[0]?.display_name, 16, name);
+  }
+  return { userId: user.id, name };
+}
+
+function withSecurityHeaders(response: Response, env: Env): Response {
+  const headers = new Headers(response.headers);
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("Referrer-Policy", "no-referrer");
+  headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  headers.set(
+    "Content-Security-Policy",
+    `default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' ${env.SUPABASE_URL} wss://${new URL(env.SUPABASE_URL).host}; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`,
+  );
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+export class GameRoom extends DurableObject<Env> {
+  private attachment(ws: WebSocket): SocketAttachment | null {
+    try {
+      const value = ws.deserializeAttachment() as SocketAttachment | null;
+      return value && isUuid(value.userId) ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private players(): Array<{ id: string; name: string }> {
+    const players = new Map<string, string>();
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws.readyState !== WebSocket.OPEN) continue;
+      const attachment = this.attachment(ws);
+      if (attachment) players.set(attachment.userId, attachment.name);
+    }
+    return [...players].map(([id, name]) => ({ id, name }));
+  }
+
+  private broadcast(type: string, payload: unknown, except?: WebSocket): void {
+    const message = JSON.stringify({ type, payload });
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws === except || ws.readyState !== WebSocket.OPEN) continue;
+      try {
+        ws.send(message);
+      } catch {
+        // The close/error callback removes dead sockets from the next Presence snapshot.
+      }
+    }
+  }
+
+  private broadcastPresence(): void {
+    this.broadcast("presence", { players: this.players() });
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+      return jsonError(426, "websocket_required");
+    }
+    const userId = request.headers.get("X-QV-User-Id") ?? "";
+    const name = boundedText(decodedHeader(request.headers.get("X-QV-Player-Name")), 16, "Người chơi");
+    if (!isUuid(userId)) return jsonError(401, "invalid_identity");
+
+    const sockets = this.ctx.getWebSockets();
+    const duplicate = sockets.filter((ws) => this.attachment(ws)?.userId === userId);
+    if (sockets.length - duplicate.length >= ROOM_CAPACITY) {
+      return jsonError(409, "room_full");
+    }
+    for (const ws of duplicate) {
+      try {
+        ws.close(4001, "newer_connection");
+      } catch {
+        // Already closed.
+      }
+    }
+
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair);
+    const now = Date.now();
+    server.serializeAttachment({
+      userId,
+      name,
+      lastStateAt: 0,
+      messageWindowAt: now,
+      messageCount: 0,
+    } satisfies SocketAttachment);
+    this.ctx.acceptWebSocket(server, [`user:${userId}`]);
+    server.send(JSON.stringify({ type: "welcome", payload: { id: userId, capacity: ROOM_CAPACITY } }));
+    this.broadcastPresence();
+
+    return new Response(null, {
+      status: 101,
+      webSocket: client,
+      headers: { "Sec-WebSocket-Protocol": "qv-game-v1" },
+    });
+  }
+
+  async webSocketMessage(ws: WebSocket, message: ArrayBuffer | string): Promise<void> {
+    if (typeof message !== "string" || new TextEncoder().encode(message).byteLength > MAX_MESSAGE_BYTES) {
+      ws.close(4009, "message_too_large");
+      return;
+    }
+    const attachment = this.attachment(ws);
+    if (!attachment) {
+      ws.close(4003, "missing_identity");
+      return;
+    }
+    const now = Date.now();
+    if (now - attachment.messageWindowAt >= 1000) {
+      attachment.messageWindowAt = now;
+      attachment.messageCount = 0;
+    }
+    attachment.messageCount += 1;
+    if (attachment.messageCount > 40) {
+      ws.close(4008, "rate_limited");
+      return;
+    }
+    ws.serializeAttachment(attachment);
+
+    let event: { type?: unknown; payload?: unknown };
+    try {
+      event = JSON.parse(message) as { type?: unknown; payload?: unknown };
+    } catch {
+      return;
+    }
+    const type = String(event.type ?? "");
+    const raw = event.payload;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+    const payload = raw as Record<string, unknown>;
+    let clean: Record<string, unknown> | null = null;
+
+    if (type === "player-state") {
+      if (now - attachment.lastStateAt < 125) return;
+      attachment.lastStateAt = now;
+      ws.serializeAttachment(attachment);
+      clean = {
+        id: attachment.userId,
+        name: attachment.name,
+        seq: Math.floor(boundedNumber(payload.seq, 0, 2_147_483_647)),
+        x: boundedNumber(payload.x, 25, 2575, 1300),
+        y: boundedNumber(payload.y, 25, 1775, 900),
+        vx: boundedNumber(payload.vx, -500, 500),
+        vy: boundedNumber(payload.vy, -500, 500),
+        dir: boundedNumber(payload.dir, -Math.PI * 2, Math.PI * 2),
+        score: Math.floor(boundedNumber(payload.score, 0, 1_000_000)),
+        dead: Boolean(payload.dead),
+        icon: boundedText(payload.icon, 4, "🐱"),
+        color: /^#[0-9a-f]{6}$/i.test(String(payload.color ?? "")) ? String(payload.color) : "#a78bfa",
+        trail: boundedText(payload.trail, 16, "none"),
+      };
+    } else if (type === "player-hit" && isUuid(payload.targetId)) {
+      clean = {
+        targetId: payload.targetId,
+        fromId: attachment.userId,
+        fromName: attachment.name,
+        impulseX: boundedNumber(payload.impulseX, -420, 420),
+        impulseY: boundedNumber(payload.impulseY, -420, 420),
+      };
+    } else if (
+      type === "player-eliminated" &&
+      isUuid(payload.eventId) &&
+      isUuid(payload.killerId)
+    ) {
+      clean = {
+        eventId: payload.eventId,
+        victimId: attachment.userId,
+        victimName: attachment.name,
+        killerId: payload.killerId,
+      };
+    } else if (
+      (type === "item-spawned" || type === "item-removed" || type === "item-collected") &&
+      isUuid(payload.itemId)
+    ) {
+      clean = {
+        itemId: payload.itemId,
+        x: boundedNumber(payload.x, 0, 2600),
+        y: boundedNumber(payload.y, 0, 1800),
+        type: payload.type === "push" ? "push" : "speed",
+        expiresAt: Math.floor(boundedNumber(payload.expiresAt, 0, Date.now() + 120_000)),
+        ...(type === "item-collected" ? { collectorId: attachment.userId } : {}),
+      };
+    }
+
+    if (clean) this.broadcast(type, clean, ws);
+  }
+
+  async webSocketClose(): Promise<void> {
+    this.broadcastPresence();
+  }
+
+  async webSocketError(): Promise<void> {
+    this.broadcastPresence();
+  }
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+    try {
+      if (url.pathname === "/api/health") {
+        return Response.json({ ok: true, service: "quai-vat-multiplayer", capacity: ROOM_CAPACITY });
+      }
+      if (url.pathname === "/api/room") {
+        if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+          return jsonError(426, "websocket_required");
+        }
+        const origin = request.headers.get("Origin");
+        if (origin && new URL(origin).host !== url.host) return jsonError(403, "origin_not_allowed");
+        const country = (url.searchParams.get("country") ?? "").toUpperCase();
+        const room = Number(url.searchParams.get("room"));
+        if (!/^[A-Z]{2}$/.test(country) || !Number.isInteger(room) || room < 1 || room > 1_000_000) {
+          return jsonError(400, "invalid_room");
+        }
+        const user = await verifySupabaseUser(request, env, country, room);
+        if (!user) return jsonError(401, "invalid_or_expired_session");
+        const headers = new Headers(request.headers);
+        headers.set("X-QV-User-Id", user.userId);
+        headers.set("X-QV-Player-Name", encodeURIComponent(user.name));
+        const stub = env.GAME_ROOM.getByName(`${country}-${room}`);
+        return await stub.fetch(new Request(request, { headers }));
+      }
+      return withSecurityHeaders(await env.ASSETS.fetch(request), env);
+    } catch (error) {
+      console.error(JSON.stringify({
+        message: "worker_request_failed",
+        path: url.pathname,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+      return jsonError(500, "internal_error");
+    }
+  },
+} satisfies ExportedHandler<Env>;
