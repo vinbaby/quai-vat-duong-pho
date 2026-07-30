@@ -150,7 +150,7 @@ describe("GameRoom", () => {
     await closeSockets([second.webSocket!]);
   });
 
-  it("owns room scores and ignores a forged client score", async () => {
+  it("owns room scores, ignores forged scores, and keeps a throttled death transition", async () => {
     const room = env.GAME_ROOM.getByName("VN-authoritative-score-test");
     const killerResponse = await room.fetch(upgradeRequest(USER_ONE, "Mèo Ghi Điểm"));
     const victimResponse = await room.fetch(upgradeRequest(USER_TWO, "Mèo Bị Đẩy"));
@@ -179,7 +179,11 @@ describe("GameRoom", () => {
     await new Promise((resolve) => setTimeout(resolve, 150));
     victim.send(JSON.stringify({
       type: "player-state",
-      payload: { seq: 2, x: hole.x, y: hole.y, vx: 0, vy: 0, dead: true, score: 999_999 },
+      payload: { seq: 2, x: hole.x, y: hole.y, vx: 0, vy: 0, dead: false, score: 999_999 },
+    }));
+    victim.send(JSON.stringify({
+      type: "player-state",
+      payload: { seq: 3, x: hole.x, y: hole.y, vx: 0, vy: 0, dead: true, score: 999_999 },
     }));
 
     const authoritativeScore = waitForMessage(killer, (message) =>

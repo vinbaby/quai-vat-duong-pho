@@ -352,9 +352,11 @@ export class GameRoom extends DurableObject<Env> {
     let clean: Record<string, unknown> | null = null;
 
     if (type === "player-state") {
-      if (now - attachment.lastStateAt < 125) return;
       const nextDead = Boolean(payload.dead);
       const scoreChanged = nextDead && !attachment.dead;
+      // A death transition is authoritative gameplay state. Never drop it just
+      // because it follows a movement packet inside the normal throttle window.
+      if (now - attachment.lastStateAt < 125 && !scoreChanged) return;
       attachment.lastStateAt = now;
       attachment.x = boundedNumber(payload.x, 25, 2575, 1300);
       attachment.y = boundedNumber(payload.y, 25, 1775, 900);
