@@ -1,39 +1,64 @@
-# Quái Vật Đường Phố — bản multiplayer thử nghiệm
+# Quái Vật Đường Phố
 
-Chạy bằng web server tĩnh (Cloudflare Workers/Pages, Netlify hoặc máy chủ cục bộ) rồi mở trong trình duyệt.
+Game web multiplayer liên tục, ghép phòng công khai theo quốc gia. Mỗi phòng
+tối đa 20 người; khi phòng đầy, Supabase tự cấp phòng tiếp theo.
 
-## Có gì trong bản thử
+## Bản v1 có gì
 
-- Đăng ký/đăng nhập và lưu hồ sơ bằng Supabase.
-- Mỗi biệt danh nhận một nhân vật hoạt hình riêng.
-- Người chơi thật được tự động ghép vào phòng công khai theo quốc gia qua Supabase Realtime.
-- Mỗi phòng tối đa 20 người; khi các phòng hiện có đầy, hệ thống tự tạo phòng tiếp theo.
-- Presence đồng bộ người online; Broadcast đồng bộ vị trí, va chạm và hạ gục.
-- Khi online chỉ hiển thị người chơi thật; bot và vật phẩm cục bộ chỉ dùng khi mất kết nối để tránh lệch trạng thái giữa thiết bị.
-- Điều khiển bằng **WASD** hoặc phím mũi tên để va chạm và đẩy đối thủ.
-- Điện thoại và máy tính bảng có cụm phím cảm ứng ở góc phải màn hình.
-- Bố cục hố đen cố định theo phòng được ghép để mọi người nhìn thấy cùng một đấu trường; chạm vào hoặc bị đẩy vào sẽ bị hạ và hồi sinh sau 3 giây.
-- Điểm cho cú đẩy hạ gục và bảng xếp hạng trực tiếp.
-- Nhặt vật phẩm 💥 để tăng 5% lực đẩy hoặc ⚡ để tăng 5% tốc độ trong 60 giây; nhặt lại chỉ làm mới thời gian.
-- Hồ sơ người chơi, xu, cửa hàng skin cosmetic và nút quảng cáo nhận thưởng mô phỏng.
-- Sáu vệt di chuyển cosmetic: không dùng vệt, cầu vồng, cỏ may mắn, tương ớt, nước mát và sao lấp lánh.
+- Đăng ký, đăng nhập và hồ sơ người chơi bằng Supabase Auth.
+- Ghép phòng công khai bằng Supabase Postgres RPC.
+- Đồng bộ trận đấu bằng Cloudflare Worker, Durable Objects và WebSocket.
+- Điểm phòng do máy chủ Cloudflare quản lý; trình duyệt không được tự gửi điểm.
+- Xác minh va chạm, hạ gục và khôi phục điểm khi kết nối lại.
+- Vật phẩm phòng, xu, skin và vệt di chuyển được lưu bằng Supabase.
+- Điều khiển bàn phím trên máy tính và nút cảm ứng trên điện thoại.
+- Hố đen, hiệu ứng va chạm, âm thanh, hồi sinh và bảng xếp hạng trong phòng.
 
-## Doanh thu trong bản phát hành
+## Bản đang chạy
 
-- Skin và vệt di chuyển chỉ thay đổi ngoại hình, không tác động tốc độ hay lực đẩy.
-- Người chơi nhận 10 xu khi đẩy đối thủ vào hố đen; có thể chọn xem quảng cáo để nhận 20 xu.
-- Nút quảng cáo hiện tại chỉ là mô phỏng. Muốn có quảng cáo trả tiền và thanh toán thật phải kết nối nhà cung cấp quảng cáo/thanh toán bằng tài khoản của chủ game.
-- Giao diện thích ứng cho điện thoại và máy tính.
+<https://quai-vat-pho-multiplayer-test.vinbabylon90.workers.dev/>
 
-## Đưa lên web
+Worker production nằm trong `cloudflare-multiplayer-`:
 
-Đưa các file web ở thư mục gốc lên Cloudflare. `supabase-config.js` chỉ chứa URL và publishable key dành cho frontend, không được đặt secret/service-role key vào đây.
+```text
+cloudflare-multiplayer-/
+  public/index.html
+  src/index.ts
+  test/game-room.test.ts
+  wrangler.jsonc
+```
 
-## Cấu hình multiplayer
+Cloudflare Build:
 
-- Chạy migration trong `supabase/migrations` để cấp quyền Broadcast và Presence cho người đã đăng nhập.
-- Migration matchmaking tạo vé phòng có thời hạn; người rời trận được xóa ngay và kết nối mất đột ngột tự hết hạn sau 60 giây.
-- Kênh game là kênh riêng tư và chỉ chấp nhận topic bắt đầu bằng `game:street-`.
-- Đây là MVP client-authoritative. Trước khi tổ chức xếp hạng hoặc trao thưởng có giá trị, cần chuyển va chạm, điểm và hạ gục sang máy chủ authoritative để chống gian lận.
+```text
+Root directory: /cloudflare-multiplayer-
+Build command: npm test
+Deploy command: npm run deploy
+Production branch: main
+```
 
-Xem thêm `PRODUCTION.md` để biết phần nào cần tài khoản đứng tên chủ game trước khi phát hành.
+## Kiểm tra trước khi deploy
+
+```bash
+cd cloudflare-multiplayer-
+npm ci
+npm test
+npm run check
+```
+
+`SUPABASE_PUBLISHABLE_KEY` là khóa công khai dành cho trình duyệt. Không đưa
+`service_role`, secret key, mật khẩu hoặc access token vào GitHub.
+
+## Cơ sở dữ liệu
+
+Các migration nằm trong `supabase/migrations`. File
+`20260730170000_sync_production_schema.sql` là ảnh chụp schema production v1,
+giúp repo có đủ bảng, hàm RPC, RLS và policy để phục hồi dự án.
+
+## Phạm vi v1
+
+Đây là game xả stress nhanh, không có thời gian trận và không có xếp hạng toàn
+cầu. Bảng xếp hạng chỉ dùng trong phòng hiện tại. Quảng cáo trả tiền và thanh
+toán thật chưa được bật.
+
+Xem `PRODUCTION.md` trước khi phát hành rộng rãi.

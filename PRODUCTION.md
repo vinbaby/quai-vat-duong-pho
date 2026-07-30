@@ -1,29 +1,54 @@
-# Chuẩn bị để phát hành và nhận doanh thu
+# Checklist phát hành Quái Vật Đường Phố v1
 
-Hiện tại game đã có tài khoản Supabase và phòng chơi Realtime thử nghiệm. Hồ sơ được lưu trên Supabase; chuyển động và trạng thái phòng chỉ truyền trực tiếp qua WebSocket, không ghi liên tục vào cơ sở dữ liệu.
+## Mốc an toàn
 
-## Những phần đã sẵn sàng
+- Nhánh production: `main`
+- Worker: `quai-vat-pho-multiplayer-test`
+- URL: <https://quai-vat-pho-multiplayer-test.vinbabylon90.workers.dev/>
+- Mỗi phòng: 20 người
+- Điểm phòng: Cloudflare Durable Object quản lý
+- Hồ sơ, xu, vật phẩm và ghép phòng: Supabase
 
-- Cửa hàng skin không ảnh hưởng sức mạnh.
-- Xu, phần thưởng từ hạ gục và quảng cáo nhận thưởng mô phỏng.
-- Thiết kế giao diện cho shop và số dư xu.
-- Phòng multiplayer dùng kênh riêng tư, chỉ dành cho người đã đăng nhập.
-- Người chơi được tự động ghép theo quốc gia, tối đa 20 người trong mỗi phòng công khai.
-- Bot chỉ dùng làm chế độ dự phòng khi mất kết nối.
+## Đã kiểm tra
 
-## Những tài khoản chủ game cần tạo
+- Hai tài khoản đăng nhập đồng thời trên máy tính và điện thoại.
+- Đồng bộ vị trí, va chạm, hạ gục, vật phẩm và hiệu ứng.
+- Điểm không lệch khi hai người hạ nhau gần như đồng thời.
+- Thoát, kết nối lại và đăng nhập lại vẫn khôi phục đúng trạng thái.
+- Worker từ chối phòng sai, token hết hạn và danh tính do trình duyệt giả mạo.
+- Tin nhắn WebSocket có giới hạn kích thước và tần suất.
+- RLS chỉ cho người chơi đọc hồ sơ và vé ghép phòng của chính mình.
+- Không có secret hoặc service-role key trong frontend.
+- Build chạy test trước khi deploy.
 
-1. Nền tảng phát hành web (Cloudflare Pages hoặc tương đương).
-2. Dịch vụ tài khoản và cơ sở dữ liệu (Supabase) — đã kết nối bản thử nghiệm.
-3. Nền tảng quảng cáo có thưởng phù hợp với game web.
-4. Nhà cung cấp thanh toán có thể nhận tiền về tài khoản của chủ game.
+## Việc chủ tài khoản nên bật thủ công
 
-Các tài khoản doanh thu phải do chủ game đứng tên vì chúng liên quan trực tiếp đến xác minh danh tính, hoàn tiền và thuế. Trước khi mở thanh toán hoặc phần thưởng có giá trị, cần có máy chủ authoritative xác nhận kết quả trận đấu; không tin điểm do trình duyệt tự gửi.
+Trong Supabase, vào **Authentication → Sign In / Security** và bật
+**Leaked password protection** nếu gói hiện tại hỗ trợ. Đây là cảnh báo bảo mật
+duy nhất cần thao tác trong Dashboard; nó không chặn bản v1 hoạt động.
 
-## Nguyên tắc an toàn cho doanh thu
+## Trước mỗi lần cập nhật
 
-- Chỉ bán cosmetic: skin, hiệu ứng va chạm, vệt di chuyển, biểu cảm, khung tên.
-- Không bán lực đẩy, tốc độ hay bất kỳ lợi thế trong trận.
-- Quảng cáo phải là lựa chọn rõ ràng; không che phần đang chơi.
-- Trước khi phát hành cần có trang điều khoản sử dụng và chính sách quyền riêng tư.
-- Trong frontend chỉ dùng Supabase publishable key; tuyệt đối không đưa secret key hoặc service-role key lên GitHub.
+1. Không sửa trực tiếp Worker production.
+2. Chạy `npm test` và `npm run check`.
+3. Commit lên `main` chỉ sau khi test hai thiết bị.
+4. Chờ Cloudflare Build hoàn tất.
+5. Kiểm tra `/api/health`, đăng nhập và chơi thử.
+6. Nếu có lỗi, dùng lịch sử Deployment của Cloudflare để rollback.
+
+## Giới hạn có chủ ý của v1
+
+- Điểm chỉ xếp hạng trong phòng, không phải bảng thành tích toàn cầu.
+- Xu và cosmetic không có giá trị tiền mặt.
+- Phần thưởng hạ gục có giới hạn chống farm ở Supabase nhưng chưa phù hợp cho
+  giải đấu hoặc vật phẩm quy đổi thành tiền.
+- Nút quảng cáo chỉ là adapter giao diện; chưa kết nối mạng quảng cáo thật.
+
+## Điều kiện trước khi bật doanh thu thật
+
+- Có chính sách quyền riêng tư và điều khoản sử dụng.
+- Tài khoản quảng cáo, thanh toán và thuế do chủ game đứng tên.
+- Thêm CAPTCHA/rate limit cho đăng ký nếu bắt đầu có người dùng công khai.
+- Chuyển xác nhận phần thưởng xu hoàn toàn sang Worker bằng bí mật máy chủ nếu
+  xu có thể mua hoặc đổi thành giá trị thật.
+- Thiết lập tên miền riêng và email hỗ trợ.
