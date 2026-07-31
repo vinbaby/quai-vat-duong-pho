@@ -4,7 +4,23 @@ const ROOM_CAPACITY = 20;
 const MAX_MESSAGE_BYTES = 2048;
 const SCORE_RETENTION_MS = 120_000;
 const HIT_CREDIT_MS = 10_000;
+const HOLE_ROTATION_MS = 90_000;
+const HOLE_WARNING_MS = 8_000;
+const HOLE_GRACE_MS = 5_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+type RoomHole = { x: number; y: number; r: number };
+
+type HoleState = {
+  roomTopic: string;
+  version: number;
+  holes: RoomHole[];
+  previousVersion: number | null;
+  previousHoles: RoomHole[];
+  rotatedAt: number;
+  nextHoleAt: number;
+  warningSent: boolean;
+};
 
 type SocketAttachment = {
   userId: string;
@@ -61,8 +77,8 @@ function roomHash(text: string): number {
   return value >>> 0;
 }
 
-function roomHoles(topic: string): Array<{ x: number; y: number; r: number }> {
-  const seed = roomHash(topic);
+function roomHoles(topic: string, version: number, attempt = 0): RoomHole[] {
+  const seed = roomHash(`${topic}:${version}:${attempt}`);
   const random = (index: number) => {
     const value = Math.sin(seed + index * 999) * 43758.5453;
     return value - Math.floor(value);
@@ -74,8 +90,22 @@ function roomHoles(topic: string): Array<{ x: number; y: number; r: number }> {
   }));
 }
 
-function isInsideRoomHole(topic: string, x: number, y: number): boolean {
-  return roomHoles(topic).some((hole) => Math.hypot(x - hole.x, y - hole.y) <= hole.r + 40);
+function isInsideRoomHole(holes: RoomHole[], x: number, y: number): boolean {
+  return holes.some((hole) => Math.hypot(x - hole.x, y - hole.y) <= hole.r + 40);
+}
+
+function parseRoomHoles(value: string): RoomHole[] {
+  try {
+    const holes = JSON.parse(value) as Array<Partial<RoomHole>>;
+    if (!Array.isArray(holes) || holes.length !== 5) return [];
+    return holes.map((hole) => ({
+      x: boundedNumber(hole.x, 100, 2500, 1300),
+      y: boundedNumber(hole.y, 100, 1700, 900),
+      r: boundedNumber(hole.r, 50, 90, 64),
+    }));
+  } catch {
+    return [];
+  }
 }
 
 function readProtocols(request: Request): { token: string } | null {
@@ -172,6 +202,17 @@ export class GameRoom extends DurableObject<Env> {
           event_id TEXT PRIMARY KEY,
           created_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS room_hole_state (
+          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+          room_topic TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          holes_json TEXT NOT NULL,
+          previous_version INTEGER,
+          previous_holes_json TEXT NOT NULL DEFAULT '[]',
+          rotated_at INTEGER NOT NULL,
+          next_hole_at INTEGER NOT NULL,
+          warning_sent INTEGER NOT NULL DEFAULT 0
+        );
       `);
     });
   }
@@ -246,6 +287,123 @@ export class GameRoom extends DurableObject<Env> {
     this.broadcast("presence", { players: this.players() });
   }
 
+  private readHoleState(): HoleState | null {
+    const row = this.ctx.storage.sql
+      .exec<{
+        room_topic: string;
+        version: number;
+        holes_json: string;
+        previous_version: number | null;
+        previous_holes_json: string;
+        rotated_at: number;
+        next_hole_at: number;
+        warning_sent: number;
+      }>("SELECT * FROM room_hole_state WHERE singleton = 1")
+      .toArray()[0];
+    if (!row) return null;
+    const holes = parseRoomHoles(row.holes_json);
+    if (holes.length !== 5) return null;
+    return {
+      roomTopic: row.room_topic,
+      version: row.version,
+      holes,
+      previousVersion: row.previous_version,
+      previousHoles: parseRoomHoles(row.previous_holes_json),
+      rotatedAt: row.rotated_at,
+      nextHoleAt: row.next_hole_at,
+      warningSent: Boolean(row.warning_sent),
+    };
+  }
+
+  private persistHoleState(state: HoleState): void {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO room_hole_state (
+        singleton, room_topic, version, holes_json, previous_version,
+        previous_holes_json, rotated_at, next_hole_at, warning_sent
+      ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (singleton) DO UPDATE SET
+        room_topic = excluded.room_topic,
+        version = excluded.version,
+        holes_json = excluded.holes_json,
+        previous_version = excluded.previous_version,
+        previous_holes_json = excluded.previous_holes_json,
+        rotated_at = excluded.rotated_at,
+        next_hole_at = excluded.next_hole_at,
+        warning_sent = excluded.warning_sent`,
+      state.roomTopic,
+      state.version,
+      JSON.stringify(state.holes),
+      state.previousVersion,
+      JSON.stringify(state.previousHoles),
+      state.rotatedAt,
+      state.nextHoleAt,
+      state.warningSent ? 1 : 0,
+    );
+  }
+
+  private safeRoomHoles(topic: string, version: number): RoomHole[] {
+    const players = this.ctx.getWebSockets()
+      .map((ws) => this.attachment(ws))
+      .filter((attachment): attachment is SocketAttachment => Boolean(attachment && !attachment.dead));
+    for (let attempt = 0; attempt < 24; attempt += 1) {
+      const holes = roomHoles(topic, version, attempt);
+      const safe = holes.every((hole) =>
+        players.every((player) => Math.hypot(player.x - hole.x, player.y - hole.y) > hole.r + 180)
+      );
+      if (safe) return holes;
+    }
+    return roomHoles(topic, version, 24);
+  }
+
+  private ensureHoleState(topic: string, now = Date.now()): HoleState {
+    const existing = this.readHoleState();
+    if (existing && existing.roomTopic === topic) return existing;
+    const version = 1;
+    const state: HoleState = {
+      roomTopic: topic,
+      version,
+      holes: this.safeRoomHoles(topic, version),
+      previousVersion: null,
+      previousHoles: [],
+      rotatedAt: now,
+      nextHoleAt: now + HOLE_ROTATION_MS,
+      warningSent: false,
+    };
+    this.persistHoleState(state);
+    return state;
+  }
+
+  private rotateHoles(state: HoleState, now = Date.now()): HoleState {
+    const next: HoleState = {
+      roomTopic: state.roomTopic,
+      version: state.version + 1,
+      holes: this.safeRoomHoles(state.roomTopic, state.version + 1),
+      previousVersion: state.version,
+      previousHoles: state.holes,
+      rotatedAt: now,
+      nextHoleAt: now + HOLE_ROTATION_MS,
+      warningSent: false,
+    };
+    this.persistHoleState(next);
+    return next;
+  }
+
+  private holePayload(state: HoleState): Record<string, unknown> {
+    return {
+      version: state.version,
+      holes: state.holes,
+      nextHoleAt: state.nextHoleAt,
+      rotationMs: HOLE_ROTATION_MS,
+      warningMs: HOLE_WARNING_MS,
+    };
+  }
+
+  private async scheduleHoleAlarm(state: HoleState): Promise<void> {
+    if (this.ctx.getWebSockets().every((ws) => ws.readyState !== WebSocket.OPEN)) return;
+    const target = state.warningSent ? state.nextHoleAt : state.nextHoleAt - HOLE_WARNING_MS;
+    await this.ctx.storage.setAlarm(Math.max(Date.now() + 100, target));
+  }
+
   async fetch(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return jsonError(426, "websocket_required");
@@ -274,6 +432,9 @@ export class GameRoom extends DurableObject<Env> {
     const country = (url.searchParams.get("country") ?? "GL").toLowerCase();
     const room = Math.max(1, Number(url.searchParams.get("room")) || 1);
     const roomTopic = `game:street-${country}-${room}`;
+    let holeState = this.ensureHoleState(roomTopic, now);
+    const holesRotated = holeState.nextHoleAt <= now;
+    if (holesRotated) holeState = this.rotateHoles(holeState, now);
     const carriedScore = duplicate.reduce(
       (score, ws) => Math.max(score, this.attachment(ws)?.score ?? 0),
       0,
@@ -306,9 +467,14 @@ export class GameRoom extends DurableObject<Env> {
     } satisfies SocketAttachment);
     this.ctx.acceptWebSocket(server, [`user:${userId}`]);
     this.persistScore(this.attachment(server)!, now);
-    server.send(JSON.stringify({ type: "welcome", payload: { id: userId, capacity: ROOM_CAPACITY, score } }));
+    server.send(JSON.stringify({
+      type: "welcome",
+      payload: { id: userId, capacity: ROOM_CAPACITY, score, ...this.holePayload(holeState) },
+    }));
     this.broadcastPresence();
     this.broadcastScores();
+    if (holesRotated) this.broadcast("hole-layout", this.holePayload(holeState), server);
+    await this.scheduleHoleAlarm(holeState);
 
     return new Response(null, {
       status: 101,
@@ -407,6 +573,13 @@ export class GameRoom extends DurableObject<Env> {
     ) {
       const killerSocket = this.socketForUser(payload.killerId);
       const killer = killerSocket ? this.attachment(killerSocket) : null;
+      const holeState = this.ensureHoleState(attachment.roomTopic, now);
+      const reportedHoleVersion = Number(payload.holeVersion);
+      const validationHoles = reportedHoleVersion === holeState.version
+        ? holeState.holes
+        : reportedHoleVersion === holeState.previousVersion && now - holeState.rotatedAt <= HOLE_GRACE_MS
+          ? holeState.previousHoles
+          : [];
       const seen = this.ctx.storage.sql
         .exec<{ event_id: string }>(
           "SELECT event_id FROM elimination_events WHERE event_id = ?",
@@ -419,7 +592,7 @@ export class GameRoom extends DurableObject<Env> {
         attachment.dead &&
         attachment.lastHitFrom === payload.killerId &&
         now - attachment.lastHitAt <= HIT_CREDIT_MS &&
-        isInsideRoomHole(attachment.roomTopic, attachment.x, attachment.y) &&
+        isInsideRoomHole(validationHoles, attachment.x, attachment.y) &&
         !seen;
       if (!valid || !killerSocket || !killer) return;
       this.ctx.storage.sql.exec(
@@ -469,6 +642,28 @@ export class GameRoom extends DurableObject<Env> {
     const attachment = this.attachment(ws);
     if (attachment) this.persistScore(attachment);
     this.broadcastPresence();
+  }
+
+  async alarm(): Promise<void> {
+    const now = Date.now();
+    const state = this.readHoleState();
+    if (!state || this.ctx.getWebSockets().every((ws) => ws.readyState !== WebSocket.OPEN)) return;
+    if (now >= state.nextHoleAt) {
+      const next = this.rotateHoles(state, now);
+      this.broadcast("hole-layout", this.holePayload(next));
+      await this.scheduleHoleAlarm(next);
+      return;
+    }
+    if (!state.warningSent && now >= state.nextHoleAt - HOLE_WARNING_MS) {
+      state.warningSent = true;
+      this.persistHoleState(state);
+      this.broadcast("hole-warning", {
+        version: state.version + 1,
+        nextHoleAt: state.nextHoleAt,
+        warningMs: HOLE_WARNING_MS,
+      });
+    }
+    await this.scheduleHoleAlarm(state);
   }
 }
 
