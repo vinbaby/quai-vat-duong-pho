@@ -45,6 +45,8 @@ describe("GameRoom", () => {
     expect(html).toContain("event.type==='score-update'");
     expect(html).toContain("event.type==='hole-layout'");
     expect(html).toContain("holeVersion");
+    expect(html).toContain("version<1||(announce&&version<=holeVersion)");
+    expect(html).toContain("createRoomHoles(0);safeRespawn(player);const channel");
     expect(html).toContain("function receiveRoomScores");
     expect(html).not.toContain("score:state.score");
   });
