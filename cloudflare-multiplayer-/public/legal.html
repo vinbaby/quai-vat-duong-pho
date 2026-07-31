@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Quyền riêng tư, điều khoản sử dụng và hỗ trợ của Quái Vật Đường Phố." />
+    <title>Thông tin & Hỗ trợ — Quái Vật Đường Phố</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink:#243153;
+        --muted:#64708a;
+        --purple:#6a4de9;
+        --pink:#ff658e;
+        --cream:#fffaf2;
+        --line:#e9e2f2;
+      }
+      * { box-sizing:border-box; }
+      html { scroll-behavior:smooth; }
+      body {
+        margin:0;
+        color:var(--ink);
+        background:
+          radial-gradient(circle at 12% 4%,#ffd978 0 5%,transparent 18%),
+          linear-gradient(145deg,#6f54df,#ff8ba4);
+        font:16px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif;
+      }
+      a { color:#5b43be; }
+      .shell { width:min(940px,calc(100% - 28px));margin:24px auto 60px; }
+      .hero,.card {
+        background:var(--cream);
+        border:1px solid #ffffffaa;
+        box-shadow:0 18px 50px #34245355;
+      }
+      .hero { padding:30px;border-radius:28px 28px 18px 18px; }
+      .brand { margin:0;color:#765fbd;font-size:12px;font-weight:900;letter-spacing:1.5px; }
+      h1 { margin:5px 0 8px;font-size:clamp(29px,7vw,48px);line-height:1.05; }
+      .hero p { margin:0;color:var(--muted); }
+      .back {
+        display:inline-block;margin-top:18px;padding:10px 15px;border-radius:12px;
+        color:#fff;background:var(--purple);font-weight:800;text-decoration:none;
+        box-shadow:0 4px 0 #4734a3;
+      }
+      nav { position:sticky;top:8px;z-index:2;display:flex;gap:8px;flex-wrap:wrap;margin:12px 0; }
+      nav a {
+        flex:1;min-width:145px;padding:10px 13px;border-radius:12px;
+        background:#fff;color:#5d48a1;text-align:center;font-weight:800;text-decoration:none;
+        box-shadow:0 3px 12px #30224c44;
+      }
+      .card { margin:12px 0;padding:28px;border-radius:18px;scroll-margin-top:75px; }
+      h2 { margin:0 0 4px;font-size:27px;line-height:1.2; }
+      h3 { margin:24px 0 5px;font-size:17px; }
+      p,li { color:#495672; }
+      ul { padding-left:22px; }
+      .updated { margin:0 0 20px;color:#8b7ca8;font-size:13px;font-weight:700; }
+      .notice { padding:13px 15px;border-left:4px solid var(--pink);border-radius:8px;background:#fff0f4; }
+      .contact {
+        display:inline-block;padding:10px 14px;border-radius:11px;
+        color:#fff;background:#5e49be;font-weight:800;text-decoration:none;
+      }
+      footer { color:#fff;text-align:center;font-size:13px; }
+      @media(max-width:600px) {
+        .shell { width:min(100% - 18px,940px);margin-top:9px; }
+        .hero,.card { padding:21px; }
+        nav { position:static; }
+        nav a { min-width:100%; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <p class="brand">✦ QUÁI VẬT ĐƯỜNG PHỐ</p>
+        <h1>Thông tin &amp; Hỗ trợ</h1>
+        <p>Thông tin minh bạch dành cho người chơi trước khi tạo tài khoản và tham gia đấu trường.</p>
+        <a class="back" href="./">← Quay lại trò chơi</a>
+      </header>
+
+      <nav aria-label="Đi đến nội dung">
+        <a href="#privacy">Quyền riêng tư</a>
+        <a href="#terms">Điều khoản sử dụng</a>
+        <a href="#support">Hỗ trợ người chơi</a>
+      </nav>
+
+      <section class="card" id="privacy">
+        <h2>Chính sách quyền riêng tư</h2>
+        <p class="updated">Cập nhật: 31/07/2026 · Áp dụng cho Quái Vật Đường Phố</p>
+        <p>VinStreamerStudio xây dựng Quái Vật Đường Phố như một trò chơi web multiplayer giải trí. Chính sách này giải thích dữ liệu nào được xử lý và vì sao.</p>
+
+        <h3>Dữ liệu được xử lý</h3>
+        <ul>
+          <li>Email, mã tài khoản và phiên đăng nhập để tạo và bảo vệ tài khoản.</li>
+          <li>Biệt danh, skin, vệt di chuyển, xu, số lần hạ gục và bị hạ để duy trì hồ sơ.</li>
+          <li>Mã quốc gia gần đúng và vé phòng để ghép người chơi; trò chơi không yêu cầu vị trí GPS chính xác.</li>
+          <li>Vị trí nhân vật, va chạm, vật phẩm và điểm trong phòng để vận hành trận đấu thời gian thực.</li>
+          <li>Một số lựa chọn trên thiết bị, như âm thanh và biệt danh gần nhất, được lưu trong trình duyệt.</li>
+        </ul>
+
+        <h3>Mục đích và nhà cung cấp</h3>
+        <p>Dữ liệu được dùng để đăng nhập, ghép phòng, đồng bộ trận đấu, chống gian lận cơ bản, khôi phục hồ sơ và hỗ trợ người chơi. Supabase cung cấp xác thực và cơ sở dữ liệu; Cloudflare cung cấp Worker, kết nối trận đấu và phân phối nội dung.</p>
+
+        <h3>Quảng cáo và thanh toán</h3>
+        <p>Bản hiện tại chưa bật quảng cáo trả tiền và chưa bán vật phẩm bằng tiền thật. Nếu tính năng này được bổ sung, chính sách sẽ được cập nhật trước khi kích hoạt.</p>
+
+        <h3>Chia sẻ, lưu giữ và bảo vệ</h3>
+        <p>Chúng tôi không bán dữ liệu cá nhân. Dữ liệu chỉ được xử lý bởi các nhà cung cấp cần thiết để game hoạt động hoặc khi pháp luật yêu cầu. Hồ sơ được giữ khi tài khoản còn hoạt động; dữ liệu kỹ thuật tạm thời có thể hết hạn sớm hơn. Các biện pháp kiểm soát truy cập và xác thực được dùng để hạn chế truy cập trái phép.</p>
+
+        <h3>Quyền của người chơi</h3>
+        <p>Bạn có thể yêu cầu xem, sửa hoặc xóa tài khoản và dữ liệu liên quan qua mục Hỗ trợ. Yêu cầu có thể cần được xác minh để tránh xóa nhầm tài khoản.</p>
+
+        <h3>Người dùng nhỏ tuổi và thay đổi chính sách</h3>
+        <p>Người chưa đủ tuổi tự đồng ý sử dụng dịch vụ trực tuyến tại nơi cư trú cần có sự đồng ý của cha mẹ hoặc người giám hộ. Khi chính sách thay đổi đáng kể, ngày cập nhật trên trang này sẽ được điều chỉnh.</p>
+      </section>
+
+      <section class="card" id="terms">
+        <h2>Điều khoản sử dụng</h2>
+        <p class="updated">Cập nhật: 31/07/2026</p>
+        <p>Khi tạo tài khoản hoặc chơi Quái Vật Đường Phố, bạn đồng ý sử dụng trò chơi một cách công bằng và phù hợp với các điều khoản dưới đây.</p>
+
+        <h3>Tài khoản và hành vi</h3>
+        <ul>
+          <li>Cung cấp thông tin đăng nhập hợp lệ và tự bảo vệ mật khẩu.</li>
+          <li>Không gian lận, tự động hóa, sửa lưu lượng mạng, phá hoại phòng hoặc quấy rối người khác.</li>
+          <li>Không dùng biệt danh hoặc nội dung vi phạm pháp luật, giả mạo hay xúc phạm.</li>
+          <li>Báo lỗi có trách nhiệm; không khai thác lỗi để nhận điểm, xu hoặc vật phẩm.</li>
+        </ul>
+
+        <h3>Điểm, xu và vật phẩm</h3>
+        <p>Điểm phòng, xu, skin và các vật phẩm trong game chỉ phục vụ giải trí, không phải tiền, không có giá trị quy đổi và không tạo quyền sở hữu tài sản thực. Các cosmetic không tăng sức mạnh có thể được điều chỉnh để giữ trải nghiệm công bằng.</p>
+
+        <h3>Khả năng cung cấp dịch vụ</h3>
+        <p>Game có thể tạm dừng để bảo trì, sửa lỗi hoặc bảo vệ hệ thống. Tài khoản vi phạm nghiêm trọng có thể bị hạn chế. Trong phạm vi pháp luật cho phép, dịch vụ được cung cấp theo trạng thái hiện có và không bảo đảm hoạt động liên tục trên mọi thiết bị hay kết nối.</p>
+
+        <h3>Thay đổi</h3>
+        <p>Tính năng và điều khoản có thể được cập nhật. Việc tiếp tục sử dụng sau khi bản cập nhật có hiệu lực đồng nghĩa với việc chấp nhận nội dung mới.</p>
+      </section>
+
+      <section class="card" id="support">
+        <h2>Hỗ trợ người chơi</h2>
+        <p class="updated">Kênh hỗ trợ chính thức của dự án</p>
+        <p class="notice"><strong>Không bao giờ gửi mật khẩu, mã xác nhận email, access token hoặc secret key trong yêu cầu hỗ trợ.</strong></p>
+
+        <h3>Trước khi báo lỗi</h3>
+        <ul>
+          <li>Tải lại trang và kiểm tra kết nối Internet.</li>
+          <li>Đăng xuất rồi đăng nhập lại nếu hồ sơ hoặc phòng chưa đồng bộ.</li>
+          <li>Ghi rõ thiết bị, trình duyệt, thời điểm xảy ra lỗi và các bước gây ra lỗi.</li>
+          <li>Với yêu cầu xóa tài khoản, ghi rõ “Yêu cầu xóa tài khoản”; chúng tôi sẽ hướng dẫn xác minh quyền sở hữu.</li>
+        </ul>
+
+        <h3>Gửi yêu cầu</h3>
+        <p>Dùng trang Issues của dự án để báo lỗi hoặc gửi yêu cầu hỗ trợ. Không đưa email đăng nhập hay dữ liệu riêng tư vào phần công khai.</p>
+        <a class="contact" href="https://github.com/vinbaby/quai-vat-duong-pho/issues" target="_blank" rel="noopener noreferrer">Mở trang hỗ trợ trên GitHub</a>
+      </section>
+
+      <footer>© 2026 VinStreamerStudio · Quái Vật Đường Phố</footer>
+    </main>
+  </body>
+</html>
