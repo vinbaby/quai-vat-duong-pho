@@ -1,8 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
 
 const ROOM_CAPACITY = 20;
+const RELEASE_VERSION = "1.1.0";
 const MAX_MESSAGE_BYTES = 2048;
 const SCORE_RETENTION_MS = 120_000;
+const EVENT_RETENTION_MS = 10 * 60_000;
 const HIT_CREDIT_MS = 10_000;
 const HOLE_ROTATION_MS = 90_000;
 const HOLE_WARNING_MS = 8_000;
@@ -267,6 +269,17 @@ export class GameRoom extends DurableObject<Env> {
     attachment.lastPersistAt = now;
   }
 
+  private pruneExpiredRoomData(now = Date.now()): void {
+    this.ctx.storage.sql.exec(
+      "DELETE FROM elimination_events WHERE created_at < ?",
+      now - EVENT_RETENTION_MS,
+    );
+    this.ctx.storage.sql.exec(
+      "DELETE FROM room_scores WHERE updated_at < ?",
+      now - SCORE_RETENTION_MS,
+    );
+  }
+
   private broadcastScores(): void {
     this.broadcast("score-update", { players: this.players().map(({ id, score }) => ({ id, score })) });
   }
@@ -428,6 +441,7 @@ export class GameRoom extends DurableObject<Env> {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     const now = Date.now();
+    this.pruneExpiredRoomData(now);
     const url = new URL(request.url);
     const country = (url.searchParams.get("country") ?? "GL").toLowerCase();
     const room = Math.max(1, Number(url.searchParams.get("room")) || 1);
@@ -646,6 +660,7 @@ export class GameRoom extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     const now = Date.now();
+    this.pruneExpiredRoomData(now);
     const state = this.readHoleState();
     if (!state || this.ctx.getWebSockets().every((ws) => ws.readyState !== WebSocket.OPEN)) return;
     if (now >= state.nextHoleAt) {
@@ -672,7 +687,12 @@ export default {
     const url = new URL(request.url);
     try {
       if (url.pathname === "/api/health") {
-        return Response.json({ ok: true, service: "quai-vat-multiplayer", capacity: ROOM_CAPACITY });
+        return Response.json({
+          ok: true,
+          service: "quai-vat-multiplayer",
+          version: RELEASE_VERSION,
+          capacity: ROOM_CAPACITY,
+        });
       }
       if (url.pathname === "/api/room") {
         if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
