@@ -156,6 +156,10 @@ window.GAME_SUPABASE = {
   url: 'https://nrotjdwhsqaaypboazmw.supabase.co',
   publishableKey: 'sb_publishable_bd3WU9TtQg2yzpWIoX5ykg__NZjCbLQ'
 };
+const portalHost = location.hostname.toLowerCase();
+if (portalHost === 'itch.io' || portalHost.endsWith('.itch.io') || portalHost.endsWith('.itch.zone') || portalHost.endsWith('.hwcdn.net')) {
+  window.GAME_MULTIPLAYER_URL = 'https://quai-vat-pho-multiplayer-test.vinbabylon90.workers.dev';
+}
 
     </script>
     <script>

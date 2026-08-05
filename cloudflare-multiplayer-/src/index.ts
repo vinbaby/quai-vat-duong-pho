@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 const ROOM_CAPACITY = 20;
-const RELEASE_VERSION = "1.1.2";
+const RELEASE_VERSION = "1.2.0-beta.1";
 const MAX_MESSAGE_BYTES = 2048;
 const SCORE_RETENTION_MS = 120_000;
 const EVENT_RETENTION_MS = 10 * 60_000;
@@ -10,6 +10,7 @@ const HOLE_ROTATION_MS = 90_000;
 const HOLE_WARNING_MS = 8_000;
 const HOLE_GRACE_MS = 5_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const TRUSTED_PORTAL_HOST_SUFFIXES = [".itch.io", ".itch.zone", ".hwcdn.net"];
 
 type RoomHole = { x: number; y: number; r: number };
 
@@ -119,6 +120,21 @@ function readProtocols(request: Request): { token: string } | null {
   const authProtocol = protocols.find((value) => value.startsWith("qv-auth."));
   const token = authProtocol?.slice("qv-auth.".length) ?? "";
   return token.length >= 32 && token.length <= 4096 ? { token } : null;
+}
+
+function isAllowedGameOrigin(origin: string | null, requestUrl: URL): boolean {
+  if (!origin) return true;
+  try {
+    const parsed = new URL(origin);
+    if (parsed.origin === requestUrl.origin) return true;
+    if (parsed.protocol !== "https:") return false;
+    const hostname = parsed.hostname.toLowerCase();
+    return TRUSTED_PORTAL_HOST_SUFFIXES.some(
+      (suffix) => hostname === suffix.slice(1) || hostname.endsWith(suffix),
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function verifySupabaseUser(
@@ -723,8 +739,9 @@ export default {
         if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
           return jsonError(426, "websocket_required");
         }
-        const origin = request.headers.get("Origin");
-        if (origin && new URL(origin).host !== url.host) return jsonError(403, "origin_not_allowed");
+        if (!isAllowedGameOrigin(request.headers.get("Origin"), url)) {
+          return jsonError(403, "origin_not_allowed");
+        }
         const country = (url.searchParams.get("country") ?? "").toUpperCase();
         const room = Number(url.searchParams.get("room"));
         if (!/^[A-Z]{2}$/.test(country) || !Number.isInteger(room) || room < 1 || room > 1_000_000) {

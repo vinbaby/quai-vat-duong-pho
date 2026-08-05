@@ -45,18 +45,18 @@ describe("GameRoom", () => {
     await expect(response.json()).resolves.toMatchObject({
       ok: true,
       service: "quai-vat-multiplayer",
-      version: "1.1.2",
+      version: "1.2.0-beta.1",
       capacity: 20,
     });
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(response.headers.get("x-qv-version")).toBe("1.1.2");
+    expect(response.headers.get("x-qv-version")).toBe("1.2.0-beta.1");
   });
 
   it("ships the server-score client without broadcasting a client-owned score", async () => {
     const response = await SELF.fetch("https://example.com/");
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-cache, no-store, must-revalidate");
-    expect(response.headers.get("x-qv-version")).toBe("1.1.2");
+    expect(response.headers.get("x-qv-version")).toBe("1.2.0-beta.1");
     const html = await response.text();
     expect(html).toContain("event.type==='score-update'");
     expect(html).toContain("event.type==='hole-layout'");
@@ -65,8 +65,30 @@ describe("GameRoom", () => {
     expect(html).toContain("createRoomHoles(0);safeRespawn(player);const channel");
     expect(html).toContain("event:'hole-clock'");
     expect(html).toContain("HỐ ${holeSeconds}s");
+    expect(html).toContain("window.GAME_MULTIPLAYER_URL = 'https://quai-vat-pho-multiplayer-test.vinbabylon90.workers.dev'");
     expect(html).toContain("function receiveRoomScores");
     expect(html).not.toContain("score:state.score");
+  });
+
+  it("allows trusted itch.io origins but rejects untrusted portal origins", async () => {
+    const request = (origin: string) => SELF.fetch("https://example.com/api/room?country=VN&room=1", {
+      headers: {
+        Upgrade: "websocket",
+        Origin: origin,
+        "Sec-WebSocket-Protocol": "qv-game-v1",
+      },
+    });
+
+    const trusted = await request("https://html-classic.itch.zone");
+    expect(trusted.status).toBe(401);
+    await expect(trusted.json()).resolves.toMatchObject({ error: "invalid_or_expired_session" });
+
+    const untrusted = await request("https://untrusted.example");
+    expect(untrusted.status).toBe(403);
+    await expect(untrusted.json()).resolves.toMatchObject({ error: "origin_not_allowed" });
+
+    const malformed = await request("not-a-valid-origin");
+    expect(malformed.status).toBe(403);
   });
 
   it("accepts two authenticated internal identities and broadcasts server-owned IDs", async () => {
