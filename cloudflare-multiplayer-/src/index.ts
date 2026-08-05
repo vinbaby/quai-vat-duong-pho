@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 const ROOM_CAPACITY = 20;
-const RELEASE_VERSION = "1.1.1";
+const RELEASE_VERSION = "1.1.2";
 const MAX_MESSAGE_BYTES = 2048;
 const SCORE_RETENTION_MS = 120_000;
 const EVENT_RETENTION_MS = 10 * 60_000;
@@ -176,6 +176,10 @@ async function verifySupabaseUser(
 
 function withSecurityHeaders(response: Response, env: Env): Response {
   const headers = new Headers(response.headers);
+  headers.set("X-QV-Version", RELEASE_VERSION);
+  if ((headers.get("Content-Type") ?? "").toLowerCase().includes("text/html")) {
+    headers.set("Cache-Control", "no-cache, no-store, must-revalidate");
+  }
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("Referrer-Policy", "no-referrer");
   headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
@@ -700,12 +704,20 @@ export default {
     const url = new URL(request.url);
     try {
       if (url.pathname === "/api/health") {
-        return Response.json({
-          ok: true,
-          service: "quai-vat-multiplayer",
-          version: RELEASE_VERSION,
-          capacity: ROOM_CAPACITY,
-        });
+        return Response.json(
+          {
+            ok: true,
+            service: "quai-vat-multiplayer",
+            version: RELEASE_VERSION,
+            capacity: ROOM_CAPACITY,
+          },
+          {
+            headers: {
+              "Cache-Control": "no-store",
+              "X-QV-Version": RELEASE_VERSION,
+            },
+          },
+        );
       }
       if (url.pathname === "/api/room") {
         if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
