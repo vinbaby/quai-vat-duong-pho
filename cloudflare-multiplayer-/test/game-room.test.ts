@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { env, runDurableObjectAlarm, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 const USER_ONE = "11111111-1111-4111-8111-111111111111";
@@ -6,20 +6,6 @@ const USER_TWO = "22222222-2222-4222-8222-222222222222";
 
 function userId(index: number): string {
   return `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
-}
-
-function firstRoomHole(): { x: number; y: number } {
-  const topic = "game:street-vn-1";
-  let seed = 7;
-  for (const character of topic) {
-    seed = ((seed << 5) - seed + character.charCodeAt(0)) | 0;
-  }
-  seed >>>= 0;
-  const random = (index: number) => {
-    const value = Math.sin(seed + index * 999) * 43758.5453;
-    return value - Math.floor(value);
-  };
-  return { x: 260 + random(0) * 2080, y: 220 + random(1) * 1360 };
 }
 
 function upgradeRequest(userId: string, name: string): Request {
@@ -53,10 +39,32 @@ function waitForMessage(
 }
 
 describe("GameRoom", () => {
+  it("reports the release version in the health endpoint", async () => {
+    const response = await SELF.fetch("https://example.com/api/health");
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      service: "quai-vat-multiplayer",
+      version: "1.1.2",
+      capacity: 20,
+    });
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("x-qv-version")).toBe("1.1.2");
+  });
+
   it("ships the server-score client without broadcasting a client-owned score", async () => {
-    const response = await env.ASSETS.fetch(new Request("https://example.com/"));
+    const response = await SELF.fetch("https://example.com/");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-cache, no-store, must-revalidate");
+    expect(response.headers.get("x-qv-version")).toBe("1.1.2");
     const html = await response.text();
     expect(html).toContain("event.type==='score-update'");
+    expect(html).toContain("event.type==='hole-layout'");
+    expect(html).toContain("holeVersion");
+    expect(html).toContain("version<1||(announce&&version<=holeVersion)");
+    expect(html).toContain("createRoomHoles(0);safeRespawn(player);const channel");
+    expect(html).toContain("event:'hole-clock'");
+    expect(html).toContain("HỐ ${holeSeconds}s");
     expect(html).toContain("function receiveRoomScores");
     expect(html).not.toContain("score:state.score");
   });
@@ -158,10 +166,15 @@ describe("GameRoom", () => {
     expect(victimResponse.status).toBe(101);
     const killer = killerResponse.webSocket!;
     const victim = victimResponse.webSocket!;
+    const killerWelcome = waitForMessage(killer, (message) => message.type === "welcome");
+    const victimWelcome = waitForMessage(victim, (message) => message.type === "welcome");
     killer.accept();
     victim.accept();
 
-    const hole = firstRoomHole();
+    const [killerLayout, victimLayout] = await Promise.all([killerWelcome, victimWelcome]);
+    expect(killerLayout.payload.holes).toEqual(victimLayout.payload.holes);
+    const holeVersion = Number(killerLayout.payload.version);
+    const hole = (killerLayout.payload.holes as Array<{ x: number; y: number }>)[0];
     killer.send(JSON.stringify({
       type: "player-state",
       payload: { seq: 1, x: hole.x + 45, y: hole.y, vx: 100, vy: 0, dead: false, score: 999_999 },
@@ -199,6 +212,7 @@ describe("GameRoom", () => {
       payload: {
         eventId: "33333333-3333-4333-8333-333333333333",
         killerId: USER_ONE,
+        holeVersion,
       },
     }));
     await expect(authoritativeScore).resolves.toMatchObject({ type: "score-update" });
@@ -229,5 +243,102 @@ describe("GameRoom", () => {
       payload: { id: USER_ONE, score: 15 },
     });
     await closeSockets([reconnect]);
+  });
+
+  it("rotates one synchronized hole layout through the Durable Object alarm", async () => {
+    const room = env.GAME_ROOM.getByName("VN-hole-rotation-test");
+    const response = await room.fetch(upgradeRequest(USER_ONE, "Mèo Canh Hố"));
+    expect(response.status).toBe(101);
+    const socket = response.webSocket!;
+    const welcomePromise = waitForMessage(socket, (message) => message.type === "welcome");
+    socket.accept();
+    const welcome = await welcomePromise;
+    const firstVersion = Number(welcome.payload.version);
+    const firstHoles = welcome.payload.holes;
+
+    await runInDurableObject(room, async (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE room_hole_state SET next_hole_at = ?, warning_sent = 0 WHERE singleton = 1",
+        Date.now() + 5_000,
+      );
+      await state.storage.setAlarm(Date.now() + 10_000);
+    });
+    const warningPromise = waitForMessage(socket, (message) => message.type === "hole-warning");
+    await expect(runDurableObjectAlarm(room)).resolves.toBe(true);
+    await expect(warningPromise).resolves.toMatchObject({
+      type: "hole-warning",
+      payload: { version: firstVersion + 1 },
+    });
+
+    await runInDurableObject(room, async (_instance, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO room_scores (user_id, score, updated_at) VALUES (?, ?, ?)",
+        USER_TWO,
+        999,
+        Date.now() - 300_000,
+      );
+      state.storage.sql.exec(
+        "INSERT INTO elimination_events (event_id, created_at) VALUES (?, ?)",
+        "44444444-4444-4444-8444-444444444444",
+        Date.now() - 900_000,
+      );
+      state.storage.sql.exec(
+        "UPDATE room_hole_state SET next_hole_at = ?, warning_sent = 1 WHERE singleton = 1",
+        Date.now() - 1,
+      );
+      await state.storage.setAlarm(Date.now() + 10_000);
+    });
+
+    const rotatedPromise = waitForMessage(socket, (message) => message.type === "hole-layout");
+    await expect(runDurableObjectAlarm(room)).resolves.toBe(true);
+    const rotated = await rotatedPromise;
+    expect(Number(rotated.payload.version)).toBe(firstVersion + 1);
+    expect(rotated.payload.holes).not.toEqual(firstHoles);
+    expect(rotated.payload.holes).toHaveLength(5);
+
+    await runInDurableObject(room, async (_instance, state) => {
+      const expiredScores = state.storage.sql
+        .exec("SELECT user_id FROM room_scores WHERE user_id = ?", USER_TWO)
+        .toArray();
+      const expiredEvents = state.storage.sql
+        .exec("SELECT event_id FROM elimination_events WHERE event_id = ?", "44444444-4444-4444-8444-444444444444")
+        .toArray();
+      expect(expiredScores).toHaveLength(0);
+      expect(expiredEvents).toHaveLength(0);
+    });
+
+    await closeSockets([socket]);
+  });
+
+  it("self-heals an overdue hole rotation from active player traffic", async () => {
+    const room = env.GAME_ROOM.getByName("VN-hole-fallback-test");
+    const response = await room.fetch(upgradeRequest(USER_ONE, "Mèo Đồng Hồ"));
+    expect(response.status).toBe(101);
+    const socket = response.webSocket!;
+    const welcomePromise = waitForMessage(socket, (message) => message.type === "welcome");
+    socket.accept();
+    const welcome = await welcomePromise;
+    const firstVersion = Number(welcome.payload.version);
+
+    await runInDurableObject(room, async (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE room_hole_state SET next_hole_at = ?, warning_sent = 1 WHERE singleton = 1",
+        Date.now() - 1,
+      );
+      await state.storage.deleteAlarm();
+    });
+
+    const rotatedPromise = waitForMessage(socket, (message) => message.type === "hole-layout");
+    socket.send(JSON.stringify({
+      type: "player-state",
+      payload: { seq: 1, x: 1300, y: 900, vx: 0, vy: 0, dead: false },
+    }));
+    const rotated = await rotatedPromise;
+    expect(Number(rotated.payload.version)).toBe(firstVersion + 1);
+
+    await runInDurableObject(room, async (_instance, state) => {
+      await expect(state.storage.getAlarm()).resolves.not.toBeNull();
+    });
+    await closeSockets([socket]);
   });
 });
