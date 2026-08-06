@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 const ROOM_CAPACITY = 20;
-const RELEASE_VERSION = "1.2.0-beta.2";
+const RELEASE_VERSION = "1.2.0-beta.3";
 const MAX_MESSAGE_BYTES = 2048;
 const SCORE_RETENTION_MS = 120_000;
 const EVENT_RETENTION_MS = 10 * 60_000;
@@ -10,6 +10,7 @@ const HOLE_ROTATION_MS = 90_000;
 const HOLE_WARNING_MS = 8_000;
 const HOLE_GRACE_MS = 5_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const TRUSTED_PORTAL_HOSTS = new Set(["uploads.ungrounded.net"]);
 const TRUSTED_PORTAL_HOST_SUFFIXES = [".itch.io", ".itch.zone", ".hwcdn.net"];
 
 type RoomHole = { x: number; y: number; r: number };
@@ -129,7 +130,7 @@ function isAllowedGameOrigin(origin: string | null, requestUrl: URL): boolean {
     if (parsed.origin === requestUrl.origin) return true;
     if (parsed.protocol !== "https:") return false;
     const hostname = parsed.hostname.toLowerCase();
-    return TRUSTED_PORTAL_HOST_SUFFIXES.some(
+    return TRUSTED_PORTAL_HOSTS.has(hostname) || TRUSTED_PORTAL_HOST_SUFFIXES.some(
       (suffix) => hostname === suffix.slice(1) || hostname.endsWith(suffix),
     );
   } catch {
