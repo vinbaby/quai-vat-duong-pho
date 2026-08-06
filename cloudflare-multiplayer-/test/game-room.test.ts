@@ -45,18 +45,18 @@ describe("GameRoom", () => {
     await expect(response.json()).resolves.toMatchObject({
       ok: true,
       service: "quai-vat-multiplayer",
-      version: "1.2.0-beta.3",
+      version: "1.2.0-beta.4",
       capacity: 20,
     });
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(response.headers.get("x-qv-version")).toBe("1.2.0-beta.3");
+    expect(response.headers.get("x-qv-version")).toBe("1.2.0-beta.4");
   });
 
   it("ships the server-score client without broadcasting a client-owned score", async () => {
     const response = await SELF.fetch("https://example.com/");
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-cache, no-store, must-revalidate");
-    expect(response.headers.get("x-qv-version")).toBe("1.2.0-beta.3");
+    expect(response.headers.get("x-qv-version")).toBe("1.2.0-beta.4");
     expect(response.headers.get("content-security-policy")).toContain(
       "frame-ancestors 'self' https://telegram.org https://*.telegram.org",
     );
@@ -71,11 +71,12 @@ describe("GameRoom", () => {
     expect(html).toContain("HỐ ${holeSeconds}s");
     expect(html).toContain("window.GAME_MULTIPLAYER_URL = 'https://quai-vat-pho-multiplayer-test.vinbabylon90.workers.dev'");
     expect(html).toContain("portalHost === 'uploads.ungrounded.net'");
+    expect(html).toContain("portalHost.endsWith('.gamejolt.com')");
     expect(html).toContain("function receiveRoomScores");
     expect(html).not.toContain("score:state.score");
   });
 
-  it("allows trusted itch.io and Newgrounds origins but rejects untrusted portal origins", async () => {
+  it("allows trusted itch.io, Newgrounds, and Game Jolt origins but rejects untrusted portal origins", async () => {
     const request = (origin: string) => SELF.fetch("https://example.com/api/room?country=VN&room=1", {
       headers: {
         Upgrade: "websocket",
@@ -92,8 +93,19 @@ describe("GameRoom", () => {
     expect(newgrounds.status).toBe(401);
     await expect(newgrounds.json()).resolves.toMatchObject({ error: "invalid_or_expired_session" });
 
+    const gameJolt = await request("https://games.gamejolt.com");
+    expect(gameJolt.status).toBe(401);
+    await expect(gameJolt.json()).resolves.toMatchObject({ error: "invalid_or_expired_session" });
+
+    const gameJoltCdn = await request("https://cdn.gjcdn.net");
+    expect(gameJoltCdn.status).toBe(401);
+    await expect(gameJoltCdn.json()).resolves.toMatchObject({ error: "invalid_or_expired_session" });
+
     const lookalike = await request("https://uploads.ungrounded.net.evil.example");
     expect(lookalike.status).toBe(403);
+
+    const gameJoltLookalike = await request("https://games.gamejolt.com.evil.example");
+    expect(gameJoltLookalike.status).toBe(403);
 
     const untrusted = await request("https://untrusted.example");
     expect(untrusted.status).toBe(403);
