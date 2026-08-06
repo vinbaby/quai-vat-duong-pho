@@ -45,18 +45,22 @@ describe("GameRoom", () => {
     await expect(response.json()).resolves.toMatchObject({
       ok: true,
       service: "quai-vat-multiplayer",
-      version: "1.2.0-beta.1",
+      version: "1.2.0-beta.2",
       capacity: 20,
     });
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(response.headers.get("x-qv-version")).toBe("1.2.0-beta.1");
+    expect(response.headers.get("x-qv-version")).toBe("1.2.0-beta.2");
   });
 
   it("ships the server-score client without broadcasting a client-owned score", async () => {
     const response = await SELF.fetch("https://example.com/");
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-cache, no-store, must-revalidate");
-    expect(response.headers.get("x-qv-version")).toBe("1.2.0-beta.1");
+    expect(response.headers.get("x-qv-version")).toBe("1.2.0-beta.2");
+    expect(response.headers.get("content-security-policy")).toContain(
+      "frame-ancestors 'self' https://telegram.org https://*.telegram.org",
+    );
+    expect(response.headers.get("content-security-policy")).not.toContain("frame-ancestors 'none'");
     const html = await response.text();
     expect(html).toContain("event.type==='score-update'");
     expect(html).toContain("event.type==='hole-layout'");

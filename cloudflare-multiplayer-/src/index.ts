@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 const ROOM_CAPACITY = 20;
-const RELEASE_VERSION = "1.2.0-beta.1";
+const RELEASE_VERSION = "1.2.0-beta.2";
 const MAX_MESSAGE_BYTES = 2048;
 const SCORE_RETENTION_MS = 120_000;
 const EVENT_RETENTION_MS = 10 * 60_000;
@@ -201,7 +201,7 @@ function withSecurityHeaders(response: Response, env: Env): Response {
   headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
   headers.set(
     "Content-Security-Policy",
-    `default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' ${env.SUPABASE_URL} wss://${new URL(env.SUPABASE_URL).host}; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`,
+    `default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' ${env.SUPABASE_URL} wss://${new URL(env.SUPABASE_URL).host}; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'self' https://telegram.org https://*.telegram.org`,
   );
   return new Response(response.body, {
     status: response.status,
