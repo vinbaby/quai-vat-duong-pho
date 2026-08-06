@@ -1,0 +1,21 @@
+{
+  "name": "quai-vat-pho-multiplayer-edge",
+  "version": "1.2.0-beta.2",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:game": "node scripts/copy-game.mjs",
+    "check": "npm run build:game && wrangler types && tsc --noEmit && wrangler deploy --dry-run",
+    "dev": "npm run build:game && wrangler dev",
+    "deploy": "npm run build:game && wrangler deploy",
+    "test": "npm run build:game && vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.19.0",
+    "@cloudflare/workers-types": "5.20260730.1",
+    "@types/node": "26.1.2",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10",
+    "wrangler": "4.115.0"
+  }
+}
