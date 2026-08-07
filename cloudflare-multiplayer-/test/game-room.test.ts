@@ -45,18 +45,18 @@ describe("GameRoom", () => {
     await expect(response.json()).resolves.toMatchObject({
       ok: true,
       service: "quai-vat-multiplayer",
-      version: "1.3.0-beta.1",
+      version: "1.3.1-beta.1",
       capacity: 20,
     });
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(response.headers.get("x-qv-version")).toBe("1.3.0-beta.1");
+    expect(response.headers.get("x-qv-version")).toBe("1.3.1-beta.1");
   });
 
   it("ships the server-score client without broadcasting a client-owned score", async () => {
     const response = await SELF.fetch("https://example.com/");
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-cache, no-store, must-revalidate");
-    expect(response.headers.get("x-qv-version")).toBe("1.3.0-beta.1");
+    expect(response.headers.get("x-qv-version")).toBe("1.3.1-beta.1");
     expect(response.headers.get("content-security-policy")).toContain(
       "frame-ancestors 'self' https://telegram.org https://*.telegram.org",
     );
@@ -181,6 +181,46 @@ describe("GameRoom", () => {
       },
     });
 
+    await closeSockets([socket]);
+  });
+
+  it("lets a nearby human knock KAI BOT back before it can steer again", async () => {
+    const room = env.GAME_ROOM.getByName("VN-server-bot-knockback-test");
+    const response = await room.fetch(upgradeRequest(USER_ONE, "Người Húc Bot"));
+    expect(response.status).toBe(101);
+    const socket = response.webSocket!;
+    const firstBotState = waitForMessage(socket, (message) =>
+      message.type === "player-state" && message.payload.isBot === true
+    );
+    socket.accept();
+    const initial = await firstBotState;
+    const botX = Number(initial.payload.x);
+    const botY = Number(initial.payload.y);
+
+    socket.send(JSON.stringify({
+      type: "player-state",
+      payload: { seq: 1, x: botX - 30, y: botY, vx: 180, vy: 0, dead: false },
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    const knockedState = waitForMessage(socket, (message) =>
+      message.type === "player-state" &&
+      message.payload.isBot === true &&
+      Number(message.payload.vx) > 180
+    );
+    socket.send(JSON.stringify({
+      type: "player-hit",
+      payload: {
+        targetId: "00000000-0000-4000-8000-000000000001",
+        impulseX: 200,
+        impulseY: 0,
+      },
+    }));
+
+    await expect(knockedState).resolves.toMatchObject({
+      type: "player-state",
+      payload: { id: "00000000-0000-4000-8000-000000000001", isBot: true },
+    });
     await closeSockets([socket]);
   });
 

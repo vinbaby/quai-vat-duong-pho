@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 const ROOM_CAPACITY = 20;
-const RELEASE_VERSION = "1.3.0-beta.1";
+const RELEASE_VERSION = "1.3.1-beta.1";
 const MAX_MESSAGE_BYTES = 2048;
 const SCORE_RETENTION_MS = 120_000;
 const EVENT_RETENTION_MS = 10 * 60_000;
@@ -15,6 +15,8 @@ const BOT_RADIUS = 22;
 const BOT_TICK_MS = 120;
 const BOT_RESPAWN_MS = 2_200;
 const BOT_HIT_COOLDOWN_MS = 420;
+const BOT_STAGGER_MS = 700;
+const BOT_KNOCKBACK_MULTIPLIER = 1.6;
 const WORLD_WIDTH = 2_600;
 const WORLD_HEIGHT = 1_800;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -88,6 +90,7 @@ type ServerBot = {
   lastHitFrom: string;
   lastHitAt: number;
   lastCollisionAt: number;
+  staggerUntil: number;
   pushBoostUntil: number;
   speedBoostUntil: number;
   sequence: number;
@@ -439,6 +442,7 @@ export class GameRoom extends DurableObject<Env> {
       lastHitFrom: "",
       lastHitAt: 0,
       lastCollisionAt: 0,
+      staggerUntil: 0,
       pushBoostUntil: 0,
       speedBoostUntil: 0,
       sequence: 0,
@@ -557,12 +561,13 @@ export class GameRoom extends DurableObject<Env> {
     const targetDistance = Math.hypot(desiredX, desiredY) || 1;
     desiredX /= targetDistance;
     desiredY /= targetDistance;
+    const staggered = now < bot.staggerUntil;
     for (const hole of holeState.holes) {
       const dx = bot.x - hole.x;
       const dy = bot.y - hole.y;
       const distance = Math.hypot(dx, dy) || 1;
       const danger = hole.r + 250;
-      if (distance < danger) {
+      if (!staggered && distance < danger) {
         const strength = Math.pow(1 - distance / danger, 2) * 3.1;
         desiredX += dx / distance * strength;
         desiredY += dy / distance * strength;
@@ -574,17 +579,17 @@ export class GameRoom extends DurableObject<Env> {
         bot.pushY -= dy / distance * pull * dt;
       }
     }
-    if (bot.x < 150) desiredX += 1.5;
-    if (bot.x > WORLD_WIDTH - 150) desiredX -= 1.5;
-    if (bot.y < 150) desiredY += 1.5;
-    if (bot.y > WORLD_HEIGHT - 150) desiredY -= 1.5;
+    if (!staggered && bot.x < 150) desiredX += 1.5;
+    if (!staggered && bot.x > WORLD_WIDTH - 150) desiredX -= 1.5;
+    if (!staggered && bot.y < 150) desiredY += 1.5;
+    if (!staggered && bot.y > WORLD_HEIGHT - 150) desiredY -= 1.5;
     const desiredLength = Math.hypot(desiredX, desiredY) || 1;
     desiredX /= desiredLength;
     desiredY /= desiredLength;
     const chasing = Boolean(bot.targetId);
     const speedBoost = bot.speedBoostUntil > now ? 1.05 : 1;
-    const speed = (chasing ? 154 : 92) * speedBoost;
-    const reaction = Math.min(1, dt * 4.2);
+    const speed = staggered ? 0 : (chasing ? 154 : 92) * speedBoost;
+    const reaction = Math.min(1, dt * (staggered ? 8 : 4.2));
     bot.vx += (desiredX * speed - bot.vx) * reaction;
     bot.vy += (desiredY * speed - bot.vy) * reaction;
     bot.dir = Math.atan2(bot.vy + bot.pushY, bot.vx + bot.pushX);
@@ -598,7 +603,11 @@ export class GameRoom extends DurableObject<Env> {
       const dx = human.x - bot.x;
       const dy = human.y - bot.y;
       const distance = Math.hypot(dx, dy) || 0.01;
-      if (distance > BOT_RADIUS + 25 || now - bot.lastCollisionAt < BOT_HIT_COOLDOWN_MS) continue;
+      if (
+        distance > BOT_RADIUS + 25 ||
+        now - bot.lastCollisionAt < BOT_HIT_COOLDOWN_MS ||
+        now < bot.staggerUntil
+      ) continue;
       const nx = dx / distance;
       const ny = dy / distance;
       const botSpeed = Math.hypot(bot.vx + bot.pushX, bot.vy + bot.pushY);
@@ -617,8 +626,11 @@ export class GameRoom extends DurableObject<Env> {
           impulseY: ny * force * 0.75,
         });
       } else {
-        bot.pushX -= nx * force * 0.65;
-        bot.pushY -= ny * force * 0.65;
+        bot.pushX -= nx * force * 0.95;
+        bot.pushY -= ny * force * 0.95;
+        bot.vx *= 0.25;
+        bot.vy *= 0.25;
+        bot.staggerUntil = now + BOT_STAGGER_MS;
         bot.lastHitFrom = human.userId;
         bot.lastHitAt = now;
       }
@@ -964,16 +976,21 @@ export class GameRoom extends DurableObject<Env> {
       const closeEnough = now - attachment.lastStateAt <= 2_000 &&
         Math.hypot(attachment.x - this.bot.x, attachment.y - this.bot.y) <= 140;
       if (!closeEnough) return;
-      this.bot.pushX += boundedNumber(payload.impulseX, -420, 420);
-      this.bot.pushY += boundedNumber(payload.impulseY, -420, 420);
+      const impulseX = boundedNumber(payload.impulseX, -420, 420);
+      const impulseY = boundedNumber(payload.impulseY, -420, 420);
+      this.bot.pushX += impulseX * BOT_KNOCKBACK_MULTIPLIER;
+      this.bot.pushY += impulseY * BOT_KNOCKBACK_MULTIPLIER;
+      this.bot.vx *= 0.25;
+      this.bot.vy *= 0.25;
+      this.bot.staggerUntil = now + BOT_STAGGER_MS;
       this.bot.lastHitFrom = attachment.userId;
       this.bot.lastHitAt = now;
       clean = {
         targetId: this.bot.id,
         fromId: attachment.userId,
         fromName: attachment.name,
-        impulseX: boundedNumber(payload.impulseX, -420, 420),
-        impulseY: boundedNumber(payload.impulseY, -420, 420),
+        impulseX,
+        impulseY,
       };
     } else if (type === "player-hit" && isUuid(payload.targetId)) {
       const targetSocket = this.socketForUser(payload.targetId);
