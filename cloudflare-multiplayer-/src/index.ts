@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 const ROOM_CAPACITY = 20;
-const RELEASE_VERSION = "1.2.0-beta.4";
+const RELEASE_VERSION = "1.3.0-beta.1";
 const MAX_MESSAGE_BYTES = 2048;
 const SCORE_RETENTION_MS = 120_000;
 const EVENT_RETENTION_MS = 10 * 60_000;
@@ -9,6 +9,14 @@ const HIT_CREDIT_MS = 10_000;
 const HOLE_ROTATION_MS = 90_000;
 const HOLE_WARNING_MS = 8_000;
 const HOLE_GRACE_MS = 5_000;
+const BOT_ID = "00000000-0000-4000-8000-000000000001";
+const BOT_NAME = "KAI BOT";
+const BOT_RADIUS = 22;
+const BOT_TICK_MS = 120;
+const BOT_RESPAWN_MS = 2_200;
+const BOT_HIT_COOLDOWN_MS = 420;
+const WORLD_WIDTH = 2_600;
+const WORLD_HEIGHT = 1_800;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TRUSTED_PORTAL_HOSTS = new Set(["uploads.ungrounded.net"]);
 const TRUSTED_PORTAL_HOST_SUFFIXES = [
@@ -42,11 +50,47 @@ type SocketAttachment = {
   score: number;
   x: number;
   y: number;
+  vx: number;
+  vy: number;
   dead: boolean;
   lastHitFrom: string;
   lastHitAt: number;
   lastPersistAt: number;
   roomTopic: string;
+};
+
+type RoomItem = {
+  id: string;
+  x: number;
+  y: number;
+  type: "push" | "speed";
+  expiresAt: number;
+};
+
+type ServerBot = {
+  id: typeof BOT_ID;
+  name: typeof BOT_NAME;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  pushX: number;
+  pushY: number;
+  dir: number;
+  score: number;
+  dead: boolean;
+  respawnAt: number;
+  lastTickAt: number;
+  lastBroadcastAt: number;
+  nextDecisionAt: number;
+  targetId: string;
+  wanderAngle: number;
+  lastHitFrom: string;
+  lastHitAt: number;
+  lastCollisionAt: number;
+  pushBoostUntil: number;
+  speedBoostUntil: number;
+  sequence: number;
 };
 
 type AuthUser = {
@@ -220,6 +264,8 @@ function withSecurityHeaders(response: Response, env: Env): Response {
 
 export class GameRoom extends DurableObject<Env> {
   private nextHoleClockCheckAt = 0;
+  private bot: ServerBot | null = null;
+  private roomItems = new Map<string, RoomItem>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -262,6 +308,8 @@ export class GameRoom extends DurableObject<Env> {
         score: Math.floor(boundedNumber(value.score, 0, 1_000_000)),
         x: boundedNumber(value.x, 25, 2575, 1300),
         y: boundedNumber(value.y, 25, 1775, 900),
+        vx: boundedNumber(value.vx, -500, 500),
+        vy: boundedNumber(value.vy, -500, 500),
         dead: Boolean(value.dead),
         lastHitFrom: isUuid(value.lastHitFrom) ? value.lastHitFrom : "",
         lastHitAt: boundedNumber(value.lastHitAt, 0, Number.MAX_SAFE_INTEGER),
@@ -273,12 +321,22 @@ export class GameRoom extends DurableObject<Env> {
     }
   }
 
-  private players(): Array<{ id: string; name: string; score: number }> {
-    const players = new Map<string, { name: string; score: number }>();
+  private humanAttachments(): SocketAttachment[] {
+    return this.ctx.getWebSockets()
+      .filter((ws) => ws.readyState === WebSocket.OPEN)
+      .map((ws) => this.attachment(ws))
+      .filter((attachment): attachment is SocketAttachment => Boolean(attachment));
+  }
+
+  private players(): Array<{ id: string; name: string; score: number; isBot: boolean }> {
+    const players = new Map<string, { name: string; score: number; isBot: boolean }>();
     for (const ws of this.ctx.getWebSockets()) {
       if (ws.readyState !== WebSocket.OPEN) continue;
       const attachment = this.attachment(ws);
-      if (attachment) players.set(attachment.userId, { name: attachment.name, score: attachment.score });
+      if (attachment) players.set(attachment.userId, { name: attachment.name, score: attachment.score, isBot: false });
+    }
+    if (this.bot && players.size > 0) {
+      players.set(this.bot.id, { name: this.bot.name, score: this.bot.score, isBot: true });
     }
     return [...players].map(([id, player]) => ({ id, ...player }));
   }
@@ -312,6 +370,266 @@ export class GameRoom extends DurableObject<Env> {
 
   private broadcastScores(): void {
     this.broadcast("score-update", { players: this.players().map(({ id, score }) => ({ id, score })) });
+  }
+
+  private botStatePayload(bot: ServerBot): Record<string, unknown> {
+    return {
+      id: bot.id,
+      name: bot.name,
+      seq: bot.sequence,
+      x: Math.round(bot.x * 10) / 10,
+      y: Math.round(bot.y * 10) / 10,
+      vx: Math.round((bot.vx + bot.pushX) * 10) / 10,
+      vy: Math.round((bot.vy + bot.pushY) * 10) / 10,
+      dir: Math.round(bot.dir * 100) / 100,
+      score: bot.score,
+      dead: bot.dead,
+      icon: "🤖",
+      color: "#ff9f43",
+      trail: "stars",
+      isBot: true,
+    };
+  }
+
+  private safeBotSpawn(holes: RoomHole[], now: number): { x: number; y: number } {
+    const players = this.humanAttachments().filter((player) => !player.dead);
+    const seed = roomHash(`${players[0]?.roomTopic ?? "room"}:bot:${Math.floor(now / 1_000)}`);
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const angleSeed = Math.sin(seed + attempt * 997) * 43_758.5453;
+      const distanceSeed = Math.sin(seed + attempt * 613 + 17) * 43_758.5453;
+      const x = 120 + (angleSeed - Math.floor(angleSeed)) * (WORLD_WIDTH - 240);
+      const y = 120 + (distanceSeed - Math.floor(distanceSeed)) * (WORLD_HEIGHT - 240);
+      const awayFromHoles = holes.every((hole) => Math.hypot(x - hole.x, y - hole.y) > hole.r + 210);
+      const awayFromPlayers = players.every((player) => Math.hypot(x - player.x, y - player.y) > 180);
+      if (awayFromHoles && awayFromPlayers) return { x, y };
+    }
+    return { x: 1_300, y: 900 };
+  }
+
+  private ensureBot(roomTopic: string, holes: RoomHole[], now: number): ServerBot | null {
+    if (this.humanAttachments().length === 0) {
+      this.bot = null;
+      return null;
+    }
+    if (this.bot) return this.bot;
+    const spawn = this.safeBotSpawn(holes, now);
+    const stored = this.ctx.storage.sql
+      .exec<{ score: number; updated_at: number }>(
+        "SELECT score, updated_at FROM room_scores WHERE user_id = ?",
+        BOT_ID,
+      )
+      .toArray()[0];
+    this.bot = {
+      id: BOT_ID,
+      name: BOT_NAME,
+      ...spawn,
+      vx: 0,
+      vy: 0,
+      pushX: 0,
+      pushY: 0,
+      dir: 0,
+      score: stored && stored.updated_at >= now - SCORE_RETENTION_MS ? stored.score : 0,
+      dead: false,
+      respawnAt: 0,
+      lastTickAt: now,
+      lastBroadcastAt: 0,
+      nextDecisionAt: now,
+      targetId: "",
+      wanderAngle: roomHash(roomTopic) % 628 / 100,
+      lastHitFrom: "",
+      lastHitAt: 0,
+      lastCollisionAt: 0,
+      pushBoostUntil: 0,
+      speedBoostUntil: 0,
+      sequence: 0,
+    };
+    return this.bot;
+  }
+
+  private persistBotScore(bot: ServerBot, now: number): void {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO room_scores (user_id, score, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT (user_id) DO UPDATE SET score = excluded.score, updated_at = excluded.updated_at`,
+      bot.id,
+      bot.score,
+      now,
+    );
+  }
+
+  private collectBotItem(bot: ServerBot, now: number): void {
+    for (const [id, item] of this.roomItems) {
+      if (item.expiresAt <= now) {
+        this.roomItems.delete(id);
+        continue;
+      }
+      if (Math.hypot(bot.x - item.x, bot.y - item.y) > BOT_RADIUS + 15) continue;
+      this.roomItems.delete(id);
+      if (item.type === "push") bot.pushBoostUntil = now + 60_000;
+      else bot.speedBoostUntil = now + 60_000;
+      this.broadcast("item-collected", { ...item, itemId: item.id, collectorId: bot.id });
+      break;
+    }
+  }
+
+  private chooseBotTarget(bot: ServerBot, humans: SocketAttachment[], now: number): void {
+    if (now < bot.nextDecisionAt) return;
+    bot.nextDecisionAt = now + 520 + roomHash(`${now}:${bot.sequence}`) % 480;
+    const item = [...this.roomItems.values()]
+      .filter((candidate) => candidate.expiresAt > now)
+      .sort((a, b) => Math.hypot(bot.x - a.x, bot.y - a.y) - Math.hypot(bot.x - b.x, bot.y - b.y))[0];
+    if (item && Math.hypot(bot.x - item.x, bot.y - item.y) < 620) {
+      bot.targetId = `item:${item.id}`;
+      return;
+    }
+    const live = humans
+      .filter((player) => !player.dead && now - player.lastStateAt < 3_000)
+      .sort((a, b) => Math.hypot(bot.x - a.x, bot.y - a.y) - Math.hypot(bot.x - b.x, bot.y - b.y));
+    const makesMistake = roomHash(`${now}:mistake:${bot.sequence}`) % 7 === 0;
+    bot.targetId = makesMistake ? "" : (live[0]?.userId ?? "");
+    if (!bot.targetId) bot.wanderAngle += (roomHash(`${now}:wander`) % 160 - 80) / 100;
+  }
+
+  private eliminateBot(bot: ServerBot, holes: RoomHole[], now: number): void {
+    if (bot.dead || !isInsideRoomHole(holes, bot.x, bot.y)) return;
+    bot.dead = true;
+    bot.respawnAt = now + BOT_RESPAWN_MS;
+    bot.vx = 0;
+    bot.vy = 0;
+    bot.pushX = 0;
+    bot.pushY = 0;
+    const killerSocket = now - bot.lastHitAt <= HIT_CREDIT_MS ? this.socketForUser(bot.lastHitFrom) : null;
+    const killer = killerSocket ? this.attachment(killerSocket) : null;
+    if (killerSocket && killer) {
+      killer.score = Math.min(1_000_000, killer.score + 15);
+      this.persistScore(killer, now);
+      killerSocket.serializeAttachment(killer);
+      this.broadcast("bot-eliminated", {
+        botId: bot.id,
+        botName: bot.name,
+        killerId: killer.userId,
+        killerScore: killer.score,
+      });
+      this.broadcastScores();
+    }
+    bot.lastHitFrom = "";
+    bot.lastHitAt = 0;
+  }
+
+  private tickBot(roomTopic: string, now = Date.now(), force = false): void {
+    if (!force && this.bot && now - this.bot.lastBroadcastAt < BOT_TICK_MS) return;
+    const holeState = this.ensureHoleState(roomTopic, now);
+    const bot = this.ensureBot(roomTopic, holeState.holes, now);
+    if (!bot) return;
+    const humans = this.humanAttachments();
+    if (bot.dead) {
+      if (now < bot.respawnAt) {
+        if (force || now - bot.lastBroadcastAt >= BOT_TICK_MS) {
+          bot.lastBroadcastAt = now;
+          bot.sequence += 1;
+          this.broadcast("player-state", this.botStatePayload(bot));
+        }
+        return;
+      }
+      Object.assign(bot, this.safeBotSpawn(holeState.holes, now));
+      bot.dead = false;
+      bot.lastTickAt = now;
+      this.broadcast("bot-respawned", { botId: bot.id, x: bot.x, y: bot.y });
+    }
+
+    const dt = Math.max(0.016, Math.min(0.3, (now - bot.lastTickAt) / 1_000));
+    bot.lastTickAt = now;
+    this.chooseBotTarget(bot, humans, now);
+    let targetX = bot.x + Math.cos(bot.wanderAngle) * 180;
+    let targetY = bot.y + Math.sin(bot.wanderAngle) * 180;
+    if (bot.targetId.startsWith("item:")) {
+      const item = this.roomItems.get(bot.targetId.slice(5));
+      if (item) ({ x: targetX, y: targetY } = item);
+      else bot.targetId = "";
+    } else if (bot.targetId) {
+      const target = humans.find((player) => player.userId === bot.targetId && !player.dead);
+      if (target) ({ x: targetX, y: targetY } = target);
+      else bot.targetId = "";
+    }
+
+    let desiredX = targetX - bot.x;
+    let desiredY = targetY - bot.y;
+    const targetDistance = Math.hypot(desiredX, desiredY) || 1;
+    desiredX /= targetDistance;
+    desiredY /= targetDistance;
+    for (const hole of holeState.holes) {
+      const dx = bot.x - hole.x;
+      const dy = bot.y - hole.y;
+      const distance = Math.hypot(dx, dy) || 1;
+      const danger = hole.r + 250;
+      if (distance < danger) {
+        const strength = Math.pow(1 - distance / danger, 2) * 3.1;
+        desiredX += dx / distance * strength;
+        desiredY += dy / distance * strength;
+      }
+      const gravityReach = hole.r * 3;
+      if (distance < gravityReach) {
+        const pull = Math.pow(1 - distance / gravityReach, 2) * 1_050;
+        bot.pushX -= dx / distance * pull * dt;
+        bot.pushY -= dy / distance * pull * dt;
+      }
+    }
+    if (bot.x < 150) desiredX += 1.5;
+    if (bot.x > WORLD_WIDTH - 150) desiredX -= 1.5;
+    if (bot.y < 150) desiredY += 1.5;
+    if (bot.y > WORLD_HEIGHT - 150) desiredY -= 1.5;
+    const desiredLength = Math.hypot(desiredX, desiredY) || 1;
+    desiredX /= desiredLength;
+    desiredY /= desiredLength;
+    const chasing = Boolean(bot.targetId);
+    const speedBoost = bot.speedBoostUntil > now ? 1.05 : 1;
+    const speed = (chasing ? 154 : 92) * speedBoost;
+    const reaction = Math.min(1, dt * 4.2);
+    bot.vx += (desiredX * speed - bot.vx) * reaction;
+    bot.vy += (desiredY * speed - bot.vy) * reaction;
+    bot.dir = Math.atan2(bot.vy + bot.pushY, bot.vx + bot.pushX);
+    bot.x = Math.max(BOT_RADIUS, Math.min(WORLD_WIDTH - BOT_RADIUS, bot.x + (bot.vx + bot.pushX) * dt));
+    bot.y = Math.max(BOT_RADIUS, Math.min(WORLD_HEIGHT - BOT_RADIUS, bot.y + (bot.vy + bot.pushY) * dt));
+    bot.pushX *= Math.pow(0.002, dt);
+    bot.pushY *= Math.pow(0.002, dt);
+
+    for (const human of humans) {
+      if (human.dead || now - human.lastStateAt > 2_000) continue;
+      const dx = human.x - bot.x;
+      const dy = human.y - bot.y;
+      const distance = Math.hypot(dx, dy) || 0.01;
+      if (distance > BOT_RADIUS + 25 || now - bot.lastCollisionAt < BOT_HIT_COOLDOWN_MS) continue;
+      const nx = dx / distance;
+      const ny = dy / distance;
+      const botSpeed = Math.hypot(bot.vx + bot.pushX, bot.vy + bot.pushY);
+      const humanSpeed = Math.hypot(human.vx, human.vy);
+      const force = (112 + Math.abs(botSpeed - humanSpeed) * 0.28) * (bot.pushBoostUntil > now ? 1.05 : 1);
+      if (botSpeed >= humanSpeed * 0.82) {
+        human.lastHitFrom = bot.id;
+        human.lastHitAt = now;
+        const targetSocket = this.socketForUser(human.userId);
+        if (targetSocket) targetSocket.serializeAttachment(human);
+        this.broadcast("player-hit", {
+          targetId: human.userId,
+          fromId: bot.id,
+          fromName: bot.name,
+          impulseX: nx * force * 0.75,
+          impulseY: ny * force * 0.75,
+        });
+      } else {
+        bot.pushX -= nx * force * 0.65;
+        bot.pushY -= ny * force * 0.65;
+        bot.lastHitFrom = human.userId;
+        bot.lastHitAt = now;
+      }
+      bot.lastCollisionAt = now;
+    }
+
+    this.collectBotItem(bot, now);
+    this.eliminateBot(bot, holeState.holes, now);
+    bot.lastBroadcastAt = now;
+    bot.sequence += 1;
+    this.broadcast("player-state", this.botStatePayload(bot));
   }
 
   private broadcast(type: string, payload: unknown, except?: WebSocket): void {
@@ -527,6 +845,8 @@ export class GameRoom extends DurableObject<Env> {
       score,
       x: 1300,
       y: 900,
+      vx: 0,
+      vy: 0,
       dead: false,
       lastHitFrom: "",
       lastHitAt: 0,
@@ -534,12 +854,16 @@ export class GameRoom extends DurableObject<Env> {
       roomTopic,
     } satisfies SocketAttachment);
     this.ctx.acceptWebSocket(server, [`user:${userId}`]);
+    const bot = this.ensureBot(roomTopic, holeState.holes, now);
     this.persistScore(this.attachment(server)!, now);
     server.send(JSON.stringify({
       type: "welcome",
       payload: { id: userId, capacity: ROOM_CAPACITY, score, ...this.holePayload(holeState) },
     }));
     this.broadcastPresence();
+    if (bot) {
+      server.send(JSON.stringify({ type: "player-state", payload: this.botStatePayload(bot) }));
+    }
     this.broadcastScores();
     if (holesRotated) this.broadcast("hole-layout", this.holePayload(holeState), server);
     await this.scheduleHoleAlarm(holeState);
@@ -598,8 +922,24 @@ export class GameRoom extends DurableObject<Env> {
       attachment.lastStateAt = now;
       attachment.x = boundedNumber(payload.x, 25, 2575, 1300);
       attachment.y = boundedNumber(payload.y, 25, 1775, 900);
+      attachment.vx = boundedNumber(payload.vx, -500, 500);
+      attachment.vy = boundedNumber(payload.vy, -500, 500);
       attachment.dead = nextDead;
       if (scoreChanged) attachment.score = Math.max(0, attachment.score - 8);
+      if (
+        scoreChanged &&
+        this.bot &&
+        attachment.lastHitFrom === this.bot.id &&
+        now - attachment.lastHitAt <= HIT_CREDIT_MS
+      ) {
+        const holeState = this.ensureHoleState(attachment.roomTopic, now);
+        if (isInsideRoomHole(holeState.holes, attachment.x, attachment.y)) {
+          this.bot.score = Math.min(1_000_000, this.bot.score + 15);
+          this.persistBotScore(this.bot, now);
+          attachment.lastHitFrom = "";
+          attachment.lastHitAt = 0;
+        }
+      }
       if (scoreChanged || now - attachment.lastPersistAt >= 15_000) {
         this.persistScore(attachment, now);
       }
@@ -620,6 +960,21 @@ export class GameRoom extends DurableObject<Env> {
         trail: boundedText(payload.trail, 16, "none"),
       };
       if (scoreChanged) this.broadcastScores();
+    } else if (type === "player-hit" && payload.targetId === BOT_ID && this.bot && !this.bot.dead) {
+      const closeEnough = now - attachment.lastStateAt <= 2_000 &&
+        Math.hypot(attachment.x - this.bot.x, attachment.y - this.bot.y) <= 140;
+      if (!closeEnough) return;
+      this.bot.pushX += boundedNumber(payload.impulseX, -420, 420);
+      this.bot.pushY += boundedNumber(payload.impulseY, -420, 420);
+      this.bot.lastHitFrom = attachment.userId;
+      this.bot.lastHitAt = now;
+      clean = {
+        targetId: this.bot.id,
+        fromId: attachment.userId,
+        fromName: attachment.name,
+        impulseX: boundedNumber(payload.impulseX, -420, 420),
+        impulseY: boundedNumber(payload.impulseY, -420, 420),
+      };
     } else if (type === "player-hit" && isUuid(payload.targetId)) {
       const targetSocket = this.socketForUser(payload.targetId);
       const target = targetSocket ? this.attachment(targetSocket) : null;
@@ -699,27 +1054,52 @@ export class GameRoom extends DurableObject<Env> {
         expiresAt: Math.floor(boundedNumber(payload.expiresAt, 0, Date.now() + 120_000)),
         ...(type === "item-collected" ? { collectorId: attachment.userId } : {}),
       };
+      const itemId = String(payload.itemId);
+      if (type === "item-spawned") {
+        this.roomItems.set(itemId, {
+          id: itemId,
+          x: Number(clean.x),
+          y: Number(clean.y),
+          type: clean.type === "push" ? "push" : "speed",
+          expiresAt: Number(clean.expiresAt),
+        });
+      } else {
+        this.roomItems.delete(itemId);
+      }
     }
 
     if (clean) this.broadcast(type, clean, ws);
+    this.tickBot(attachment.roomTopic, now);
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
     const attachment = this.attachment(ws);
     if (attachment) this.persistScore(attachment);
     this.broadcastPresence();
+    if (this.humanAttachments().length === 0) {
+      this.bot = null;
+      this.roomItems.clear();
+      await this.ctx.storage.deleteAlarm();
+    }
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
     const attachment = this.attachment(ws);
     if (attachment) this.persistScore(attachment);
     this.broadcastPresence();
+    if (this.humanAttachments().length === 0) {
+      this.bot = null;
+      this.roomItems.clear();
+      await this.ctx.storage.deleteAlarm();
+    }
   }
 
   async alarm(): Promise<void> {
     const now = Date.now();
     this.pruneExpiredRoomData(now);
     await this.advanceHoleClock(now, undefined, true);
+    const holeState = this.readHoleState();
+    if (holeState) this.tickBot(holeState.roomTopic, now, true);
   }
 }
 

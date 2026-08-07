@@ -45,18 +45,18 @@ describe("GameRoom", () => {
     await expect(response.json()).resolves.toMatchObject({
       ok: true,
       service: "quai-vat-multiplayer",
-      version: "1.2.0-beta.4",
+      version: "1.3.0-beta.1",
       capacity: 20,
     });
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(response.headers.get("x-qv-version")).toBe("1.2.0-beta.4");
+    expect(response.headers.get("x-qv-version")).toBe("1.3.0-beta.1");
   });
 
   it("ships the server-score client without broadcasting a client-owned score", async () => {
     const response = await SELF.fetch("https://example.com/");
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-cache, no-store, must-revalidate");
-    expect(response.headers.get("x-qv-version")).toBe("1.2.0-beta.4");
+    expect(response.headers.get("x-qv-version")).toBe("1.3.0-beta.1");
     expect(response.headers.get("content-security-policy")).toContain(
       "frame-ancestors 'self' https://telegram.org https://*.telegram.org",
     );
@@ -132,7 +132,7 @@ describe("GameRoom", () => {
     const received = new Promise<Record<string, unknown>>((resolve) => {
       secondSocket!.addEventListener("message", (event: MessageEvent) => {
         const message = JSON.parse(String(event.data)) as { type: string; payload: Record<string, unknown> };
-        if (message.type === "player-state") resolve(message.payload);
+        if (message.type === "player-state" && message.payload.id === USER_ONE) resolve(message.payload);
       });
     });
     firstSocket!.send(JSON.stringify({
@@ -150,6 +150,38 @@ describe("GameRoom", () => {
     }));
     await expect(received).resolves.toMatchObject({ id: USER_ONE, name: "Mèo Một", x: 100, y: 200, score: 0 });
     await closeSockets([firstSocket!, secondSocket!]);
+  });
+
+  it("adds one synchronized KAI BOT without consuming a human room slot", async () => {
+    const room = env.GAME_ROOM.getByName("VN-server-bot-test");
+    const response = await room.fetch(upgradeRequest(USER_ONE, "Người Stream"));
+    expect(response.status).toBe(101);
+    const socket = response.webSocket!;
+    const presencePromise = waitForMessage(socket, (message) =>
+      message.type === "presence" &&
+      Array.isArray(message.payload.players) &&
+      message.payload.players.some((entry) =>
+        (entry as { name?: string; isBot?: boolean }).name === "KAI BOT" &&
+        (entry as { name?: string; isBot?: boolean }).isBot === true
+      )
+    );
+    const statePromise = waitForMessage(socket, (message) =>
+      message.type === "player-state" && message.payload.isBot === true
+    );
+    socket.accept();
+
+    await expect(presencePromise).resolves.toMatchObject({ type: "presence" });
+    await expect(statePromise).resolves.toMatchObject({
+      type: "player-state",
+      payload: {
+        id: "00000000-0000-4000-8000-000000000001",
+        name: "KAI BOT",
+        icon: "🤖",
+        isBot: true,
+      },
+    });
+
+    await closeSockets([socket]);
   });
 
   it("rejects missing server identity", async () => {
